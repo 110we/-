@@ -1,0 +1,51 @@
+name: Diag
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept licenses
+        run: yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Install NDK
+        run: sdkmanager --install "ndk;27.0.12077973" >/dev/null
+
+      - name: Run gradle with full output
+        id: gradle
+        continue-on-error: true
+        run: |
+          chmod +x gradlew
+          set +e
+          ./gradlew :app:assembleDebug --stacktrace --no-daemon > /tmp/gradle.log 2>&1
+          echo "exit=$?" > /tmp/code.txt
+          tail -60 /tmp/gradle.log
+
+      - name: Commit gradle log back to repo
+        run: |
+          mkdir -p diag
+          cp /tmp/gradle.log diag/gradle.log
+          echo "exit: $(cat /tmp/code.txt)" > diag/exit.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add diag/
+          git commit -m "diag: gradle log [skip ci]" || echo "no changes to commit"
+          git push 2>&1 | tail -3
