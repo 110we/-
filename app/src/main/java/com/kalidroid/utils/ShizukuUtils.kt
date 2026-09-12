@@ -44,16 +44,22 @@ object ShizukuUtils {
     fun requestPermission(onResult: ((Boolean) -> Unit)? = null) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                Shizuku.requestPermission(object : Shizuku.OnRequestPermissionResultListener {
+                // Shizuku 13.x: addRequestPermissionResultListener + requestPermission(int)
+                val listener = object : Shizuku.OnRequestPermissionResultListener {
                     override fun onRequestPermissionResult(requestCode: Int, grantResult: Int) {
                         onResult?.invoke(grantResult == PackageManager.PERMISSION_GRANTED)
+                        runCatching { Shizuku.removeRequestPermissionResultListener(this) }
                     }
-                })
+                }
+                Shizuku.addRequestPermissionResultListener(listener)
+                Shizuku.requestPermission(CODE_REQUEST_PERMISSION)
             }
         } catch (e: Throwable) {
             onResult?.invoke(false)
         }
     }
+
+    private const val CODE_REQUEST_PERMISSION = 10086
 
     /** 跳转 Shizuku 应用（当用户需要手动启动/授权时） */
     fun openShizuku(context: Context) {

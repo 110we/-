@@ -40,10 +40,12 @@ class AdbExecutor : CommandExecutor {
 
     /**
      * 通过 Shizuku.newProcess 以 shell 身份执行命令并读取输出。
+     * 注：rikka Shizuku 13.x 的 newProcess 为 private 静态方法，走反射调用。
      */
     private fun shizukuExec(command: String): String {
         try {
-            val process = Shizuku.newProcess(arrayOf("/system/bin/sh", "-c", command), null, null)
+            val process = shizukuNewProcess(arrayOf("/system/bin/sh", "-c", command), null, null)
+                ?: return "Shizuku newProcess 不可用"
             val output = process.inputStream.readBytes().toString(Charsets.UTF_8)
             val err = process.errorStream.readBytes().toString(Charsets.UTF_8)
             process.waitFor()
@@ -51,6 +53,18 @@ class AdbExecutor : CommandExecutor {
         } catch (e: Throwable) {
             // 降级：老版本 API 走 legacy 通道
             return legacyShizukuExec(command)
+        }
+    }
+
+    /** 反射调用 Shizuku.newProcess（private 静态），返回 java.lang.Process */
+    private fun shizukuNewProcess(cmd: Array<String>, envp: Array<String>?, dir: String?): Process? {
+        return try {
+            val clazz = Class.forName("rikka.shizuku.Shizuku")
+            val m = clazz.getDeclaredMethod("newProcess", Array<String>::class.java, Array<String>::class.java, String::class.java)
+            m.isAccessible = true
+            m.invoke(null, cmd, envp, dir) as? Process
+        } catch (e: Throwable) {
+            null
         }
     }
 
