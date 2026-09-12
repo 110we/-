@@ -39,12 +39,7 @@ Daemon will be stopped at the end of the build
 > Task :app:checkDebugDuplicateClasses
 
 > Task :app:compileDebugKotlin
-e: file:///home/runner/work/-/-/app/src/main/java/com/kalidroid/kali/KaliContainer.kt:63:91 Unresolved reference 'pid'.
-e: file:///home/runner/work/-/-/app/src/main/java/com/kalidroid/kali/KaliContainer.kt:82:77 Unresolved reference 'pid'.
-e: file:///home/runner/work/-/-/app/src/main/java/com/kalidroid/kali/KaliContainer.kt:112:28 Unresolved reference 'pid'.
-e: file:///home/runner/work/-/-/app/src/main/java/com/kalidroid/kali/KaliContainer.kt:126:28 Unresolved reference 'pid'.
-e: file:///home/runner/work/-/-/app/src/main/java/com/kalidroid/kali/RootfsManager.kt:94:20 Return type mismatch: expected 'kotlin.Boolean', actual 'kotlin.Any'.
-e: file:///home/runner/work/-/-/app/src/main/java/com/kalidroid/kali/RootfsManager.kt:187:29 Returns are prohibited for functions with an expression body. Use block body '{...}'.
+e: file:///home/runner/work/-/-/app/src/main/java/com/kalidroid/kali/RootfsManager.kt:104:82 The feature "break continue in inline lambdas" is experimental and should be enabled explicitly
 
 > Task :app:mergeExtDexDebug
 > Task :app:compileDebugKotlin FAILED
@@ -251,5 +246,5 @@ Caused by: org.jetbrains.kotlin.gradle.tasks.CompilationErrorException: Compilat
 	... 2 more
 
 
-BUILD FAILED in 2m 15s
+BUILD FAILED in 1m 56s
 21 actionable tasks: 21 executed
