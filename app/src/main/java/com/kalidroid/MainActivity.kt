@@ -19,6 +19,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.kalidroid.kali.DownloadSources
 import com.kalidroid.kali.ProotDownloader
 import com.kalidroid.model.Tool
 import com.kalidroid.ui.dashboard.DashboardScreen
@@ -56,10 +57,19 @@ class MainActivity : ComponentActivity() {
 
                 if (!initialized) {
                     // ---- 初始化门禁：动画页 + 一键下载核心资源 ----
+                    var sourceIdx by rememberSaveable { mutableStateOf(0) }
+                    val curSource = DownloadSources.prootSources[sourceIdx.coerceIn(0, DownloadSources.prootSources.size - 1)]
                     InitScreen(
                         downloading = downloading,
                         progress = progress,
                         status = status,
+                        sourceName = curSource.name,
+                        onSwitchSource = {
+                            // 循环切换下载源
+                            sourceIdx = (sourceIdx + 1) % DownloadSources.prootSources.size
+                            DownloadSources.setProotId(DownloadSources.prootSources[sourceIdx].id)
+                            status = "已切换下载源：${curSource.name}，点击初始化重试"
+                        },
                         onInit = {
                             if (downloading) return@InitScreen
                             downloading = true
@@ -72,7 +82,7 @@ class MainActivity : ComponentActivity() {
                                         scope.launch {
                                             progress = p
                                             status = when {
-                                                p < 0.15f -> "连接 Termux 源…"
+                                                p < 0.15f -> "连接 ${curSource.name}…"
                                                 p < 0.8f -> "下载 proot 引擎… ${(p * 100).toInt()}%"
                                                 p < 0.95f -> "解析 deb 包…"
                                                 else -> "释放二进制…"
@@ -85,7 +95,7 @@ class MainActivity : ComponentActivity() {
                                     status = "✅ 初始化完成"
                                 } else {
                                     downloading = false
-                                    status = "❌ 初始化失败，请检查网络后重试"
+                                    status = "❌ 初始化失败（${curSource.name}），可切换源重试"
                                 }
                             }
                         }

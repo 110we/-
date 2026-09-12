@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -46,6 +47,8 @@ fun InitScreen(
     downloading: Boolean,
     progress: Float,
     status: String,
+    sourceName: String = "默认",
+    onSwitchSource: () -> Unit = {},
     onInit: () -> Unit
 ) {
     val transition = rememberInfiniteTransition(label = "init")
@@ -188,6 +191,19 @@ fun InitScreen(
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 34.dp, vertical = 14.dp)
                 ) {
                     Text("⚡ 一键初始化（下载核心资源）", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                }
+                // 当前源 + 换源入口
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "当前下载源：$sourceName",
+                    color = Color(0xFF9575CD),
+                    fontSize = 12.sp
+                )
+                OutlinedButton(
+                    onClick = onSwitchSource,
+                    modifier = Modifier.padding(horizontal = 40.dp)
+                ) {
+                    Text("🔄 切换下载源", fontSize = 13.sp)
                 }
             }
             Spacer(Modifier.height(8.dp))

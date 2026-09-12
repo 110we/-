@@ -67,23 +67,24 @@ class RootfsManager(private val context: Context = KaliDroidApp.instance) {
     fun rootfs(): File = rootfsDir
 
     /**
-     * 在线下载 Kali rootfs 并安装（AnLinux 镜像源）。
+     * 在线下载 Kali rootfs 并安装。
+     * 使用用户选择的下载源（DownloadSources 注册表）。
      * arch: arm64 / arm / x86_64
      */
     @Synchronized
     fun downloadAndInstall(
         arch: String = "arm64",
-        onProgress: ((Float) -> Unit)? = null
+        onProgress: ((Float) -> Unit)? = null,
+        source: DownloadSource? = null
     ): RootfsStatus {
-        val url = when (arch) {
-            "arm" -> "https://raw.githubusercontent.com/EXALAB/Anlinux-Resources/master/Rootfs/Kali/armhf/kali-rootfs-armhf.tar.xz"
-            "x86_64" -> "https://raw.githubusercontent.com/EXALAB/Anlinux-Resources/master/Rootfs/Kali/amd64/kali-rootfs-amd64.tar.xz"
-            else -> "https://raw.githubusercontent.com/EXALAB/Anlinux-Resources/master/Rootfs/Kali/arm64/kali-rootfs-arm64.tar.xz"
-        }
+        // 用户选定的源；未指定则用注册表默认（Kali 官方 CDN 优先）
+        val src = source ?: DownloadSources.selectedRootfs(arch)
+        val url = src?.rootfsUrl ?: return RootfsStatus(false, "该架构暂无可用下载源")
+        println("KaliDroid rootfs source: ${src.name} -> $url")
         return runCatching {
             val tmp = File(context.cacheDir, "kali-rootfs-download.tar.xz")
             if (tmp.exists()) tmp.delete()
-            downloadFile(url, tmp, onProgress) ?: return RootfsStatus(false, "下载失败")
+            downloadFile(url, tmp, onProgress) ?: return RootfsStatus(false, "下载失败（源: ${src.name}）")
             if (tmp.length() < 1_000_000) return RootfsStatus(false, "下载不完整（${tmp.length()} 字节）")
             val st = extract(tmp.absolutePath)
             tmp.delete()

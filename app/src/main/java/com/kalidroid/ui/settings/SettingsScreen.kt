@@ -23,6 +23,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.kalidroid.KaliDroidApp
 import com.kalidroid.bridge.NativeExecutorBridge
+import com.kalidroid.kali.DownloadSources
 import com.kalidroid.permission.ExecutorMode
 import com.kalidroid.utils.FileUtils
 import com.kalidroid.utils.RootUtils
@@ -106,6 +107,39 @@ OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
             FileUtils.write(app, "settings.txt", "theme=${if (darkTheme) "dark" else "light"}")
             message = "已写入 filesDir: ${FileUtils.list(app)}"
         }) { Text("写入 /data/data 应用目录") }
+
+        // ---------- 下载源选择 ----------
+        Text("下载源选择（所有源可用，按你的网络挑最快的）", style = MaterialTheme.typography.titleMedium)
+
+        Text("▸ Proot 源", color = MaterialTheme.colorScheme.primary)
+        DownloadSources.prootSources.forEach { s ->
+            val selected = DownloadSources.getProotId() == s.id
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    DownloadSources.setProotId(s.id)
+                    message = "proot 源已切换: ${s.name}"
+                }
+            ) {
+                Text(if (selected) "● ${s.name}（当前） · ${s.desc}" else "○ ${s.name} · ${s.desc}")
+            }
+        }
+
+        Text("▸ Rootfs 源 (arm64)", color = MaterialTheme.colorScheme.primary)
+        DownloadSources.rootfsSources("arm64").forEach { s ->
+            val selected = DownloadSources.getRootfsId("arm64") == s.id
+            Button(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    DownloadSources.setRootfsId("arm64", s.id)
+                    message = "rootfs 源已切换: ${s.name}"
+                }
+            ) {
+                Text(if (selected) "● ${s.name}（当前） · ${s.desc}" else "○ ${s.name} · ${s.desc}")
+            }
+        }
+
+        Text("当前选择：proot=${DownloadSources.selectedProot().name}  rootfs=${DownloadSources.selectedRootfs()?.name}", color = MaterialTheme.colorScheme.secondary)
 
         Text(message, color = MaterialTheme.colorScheme.primary)
     }

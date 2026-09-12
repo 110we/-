@@ -13,18 +13,12 @@ import org.tukaani.xz.XZInputStream
  */
 object ProotDownloader {
 
-    private const val PACKAGES_URL =
-        "https://packages.termux.dev/apt/termux-main/dists/stable/main/binary-aarch64/Packages"
-
-    private const val DEB_BASE =
-        "https://packages.termux.dev/apt/termux-main/"
-
     /**
      * 在线下载并安装 proot。
      * @param onProgress 下载进度回调 0..1
      * @return 成功返回 proot 文件路径，失败返回 null
      */
-    fun install(context: Context = KaliDroidApp.instance, onProgress: ((Float) -> Unit)? = null): String? {
+    fun install(context: Context = KaliDroidApp.instance, onProgress: ((Float) -> Unit)? = null, source: DownloadSource? = null): String? {
         val binDir = File(context.filesDir, "bin").apply { mkdirs() }
         val prootFile = File(binDir, "proot")
         val libFile = File(binDir, "libproot.so")
@@ -34,13 +28,19 @@ object ProotDownloader {
             return prootFile.absolutePath
         }
 
+        // 使用用户选择的源；未指定则用注册表默认
+        val mirror = source ?: DownloadSources.selectedProot()
+        val packagesUrl = mirror.packagesUrl ?: return null
+        val debBase = mirror.debBase ?: return null
+        println("KaliDroid proot source: ${mirror.name} ($packagesUrl)")
+
         return try {
             onProgress?.invoke(0.05f)
             // 1. 拉取 Packages 索引，解析 proot 的 deb 下载地址
-            val packages = httpGet(PACKAGES_URL) ?: return null
+            val packages = httpGet(packagesUrl) ?: return null
             onProgress?.invoke(0.15f)
             val filename = parseFilename(packages, "proot") ?: return null
-            val debUrl = DEB_BASE + filename
+            val debUrl = debBase + filename
             println("KaliDroid proot deb: $debUrl")
 
             // 2. 下载 deb（带进度）
