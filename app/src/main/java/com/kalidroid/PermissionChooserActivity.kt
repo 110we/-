@@ -22,6 +22,9 @@ import com.kalidroid.utils.RootUtils
 import com.kalidroid.utils.ShizukuUtils
 
 class PermissionChooserActivity : ComponentActivity() {
+
+    private var requestedOnce = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val pm = KaliDroidApp.instance.permissionManager
@@ -38,7 +41,39 @@ class PermissionChooserActivity : ComponentActivity() {
                         Text("启动权限选择", style = MaterialTheme.typography.headlineMedium)
                         Text("PermissionManager 检测、存储、获取执行器。")
                         Text("normal=${detected["normal"]}  adb=${detected["adb"]}  root=${detected["root"]}")
-                        Text("su=${RootUtils.hasSu()}  Shizuku=${ShizukuUtils.isRunning()}")
+                        Text("su=${RootUtils.hasSu()}  Shizuku=${ShizukuUtils.isRunning()}  已授权=${ShizukuUtils.isGranted()}")
+
+                        if (!ShizukuUtils.isRunning()) {
+                            Button(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    // 自动索要 ADB 通道：先拉起 Shizuku，再请求授权
+                                    if (ShizukuUtils.isInstalled(this@PermissionChooserActivity)) {
+                                        ShizukuUtils.openShizuku(this@PermissionChooserActivity)
+                                    } else {
+                                        enter(ExecutorMode.NORMAL, "未安装 Shizuku，已选择普通执行器")
+                                    }
+                                }
+                            ) { Text("授权 ADB 通道（Shizuku）") }
+                        } else if (!ShizukuUtils.isGranted()) {
+                            Button(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = {
+                                    ShizukuUtils.requestPermission { granted ->
+                                        if (granted) {
+                                            enter(ExecutorMode.ADB, "Shizuku 已授权，ADB 通道可用")
+                                        } else {
+                                            enter(ExecutorMode.NORMAL, "Shizuku 授权被拒绝，已降级 NORMAL")
+                                        }
+                                    }
+                                }
+                            ) { Text("Shizuku 已运行，点击授权") }
+                        } else {
+                            Button(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = { enter(ExecutorMode.ADB) }
+                            ) { Text("ADB 通道已就绪，直接进入") }
+                        }
 
                         Button(
                             modifier = Modifier.fillMaxWidth(),
@@ -47,7 +82,17 @@ class PermissionChooserActivity : ComponentActivity() {
 
                         OutlinedButton(
                             modifier = Modifier.fillMaxWidth(),
-                            onClick = { enter(ExecutorMode.ADB, if (ShizukuUtils.isRunning()) "Shizuku 已授权" else "Shizuku 未运行，将降级 NORMAL") }
+                            onClick = {
+                                if (ShizukuUtils.isRunning()) {
+                                    if (ShizukuUtils.isGranted()) enter(ExecutorMode.ADB)
+                                    else ShizukuUtils.requestPermission { granted ->
+                                        enter(if (granted) ExecutorMode.ADB else ExecutorMode.NORMAL,
+                                            if (granted) "Shizuku 已授权" else "授权被拒绝，降级 NORMAL")
+                                    }
+                                } else {
+                                    enter(ExecutorMode.ADB, "Shizuku 未运行，将降级 NORMAL")
+                                }
+                            }
                         ) { Text("AdbExecutor  ·  Shizuku") }
 
                         OutlinedButton(
@@ -57,6 +102,19 @@ class PermissionChooserActivity : ComponentActivity() {
 
                         Text("高级通道可用时启用，不可用时自动回退普通执行器。", color = MaterialTheme.colorScheme.secondary)
                     }
+                }
+            }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // 自动索要：Shizuku 已运行但未授权时，自动弹一次授权请求
+        if (!requestedOnce && ShizukuUtils.isRunning() && !ShizukuUtils.isGranted()) {
+            requestedOnce = true
+            ShizukuUtils.requestPermission { granted ->
+                if (granted) {
+                    enter(ExecutorMode.ADB, "Shizuku 已自动授权，ADB 通道可用")
                 }
             }
         }

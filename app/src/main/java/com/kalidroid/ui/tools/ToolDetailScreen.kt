@@ -36,22 +36,72 @@ fun ToolDetailScreen(tool: Tool, onBack: () -> Unit) {
         Text(tool.description, color = MaterialTheme.colorScheme.secondary)
         Text("分类: ${tool.category}")
         Text("命令模板: ${tool.command}")
+        if (tool.command.startsWith("kali ") || tool.category == "容器" || tool.category == "工具链") {
+            Text("⚡ 该工具走 Kali 容器通道（proot）", color = MaterialTheme.colorScheme.tertiary)
+        }
         OutlinedTextField(
             value = extra,
             onValueChange = { extra = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("附加参数（不会绕过白名单）") }
+            label = { Text("附加参数（容器命令将拼接到尾部）") }
         )
         Button(onClick = {
             scope.launch {
-                val result = KaliDroidApp.instance.permissionManager.getExecutor().execAsync(tool.command)
-                output = listOfNotNull(
-                    if (extra.isNotBlank()) "附加参数已忽略: $extra" else null,
-                    result.stdout.ifBlank { result.stderr }
-                ).joinToString("\n")
+                output = runTool(tool, extra)
             }
         }) { Text("用当前执行器运行") }
         Text(output, fontFamily = FontFamily.Monospace)
         Button(onClick = onBack) { Text("返回") }
     }
 }
+
+/** 工具执行路由：容器/工具链命令走 KaliContainer，其余走当前执行器 */
+private suspend fun runTool(tool: Tool, extra: String): String {
+    val container = KaliDroidApp.instance.kaliContainer
+    val cmd = tool.command
+    val full = if (extra.isBlank()) cmd else "$cmd $extra"
+    return when {
+        // ---- 容器管理 ----
+        cmd == "kali status" -> {
+            val st = container.status()
+            "state=${st.message}\npid=${st.pid}"
+        }
+        cmd == "kali start" -> {
+            val st = container.start()
+            "${if (st.running) "✅" else "❌"} ${st.message}"
+        }
+        cmd == "kali stop" -> {
+            val st = container.stop()
+            st.message
+        }
+        cmd == "kali rootfs" -> {
+            val rs = container.status()
+            rs.message
+        }
+        cmd == "kali proot" -> {
+            "proot 安装状态: ${if (container.prootInstalled()) "已安装" else "未安装（请将 proot 放入 assets 后更新 APK）"}"
+        }
+        // ---- 容器内执行（含工具链 / kali exec / kali shell）----
+        cmd.startsWith("kali ") || tool.category == "工具链" -> {
+            val inner = when {
+                cmd == "kali exec" -> extra
+                cmd == "kali shell" -> "echo '进入容器（交互 shell 需终端 App，此处执行一次命令）' && uname -a"
+                else -> full.removePrefix("kali ")
+            }
+            if (inner.isBlank()) return "缺少要执行的命令"
+            val r = container.exec(inner)
+            r.stdout.ifBlank { r.stderr }.ifBlank { "(无输出) exit=${r.exitCode}" }
+        }
+        // ---- 常规工具走当前执行器 ----
+        else -> {
+            val result = KaliDroidApp.instance.permissionManager.getExecutor().execAsync(full)
+            listOfNotNull(
+                if (extra.isNotBlank() && !isContainerTool(tool)) "附加参数已忽略: $extra" else null,
+                result.stdout.ifBlank { result.stderr }
+            ).joinToString("\n")
+        }
+    }
+}
+
+private fun isContainerTool(tool: Tool): Boolean =
+    tool.command.startsWith("kali ") || tool.category == "容器" || tool.category == "工具链"

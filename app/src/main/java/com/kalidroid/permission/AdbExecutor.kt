@@ -6,21 +6,25 @@ import com.kalidroid.KaliDroidApp
 import com.kalidroid.utils.ShizukuUtils
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import rikka.shizuku.Shizuku
 
 /**
  * ADB / Shizuku 执行器（v2.1 真实现）。
  *
- * 通过 Shizuku 的 binder 通道以 shell 权限执行命令。
- * 使用反射组装 Parcel 调用 IShizukuService.transact，
- * 不引入 Shizuku API 依赖，降低耦合。
+ * 通过 Shizuku API 的 Shizuku.newProcess 以 shell 权限执行命令。
+ * 已集成 rikka Shizuku API（build.gradle 引入），
+ * 授权后可直接执行任意命令，等价于 adb shell。
  *
- * 前置条件：Shizuku 已运行且已授权本应用。
+ * 前置条件：Shizuku 已运行且已授权本应用（PermissionChooser 自动索要）。
  */
 class AdbExecutor : CommandExecutor {
 
     override fun exec(command: String): ExecResult {
         if (!ShizukuUtils.isRunning()) {
             return ExecResult(ok = false, stderr = "Shizuku 未运行，ADB 通道不可用（请先启动 Shizuku 并授权）", denied = true)
+        }
+        if (!ShizukuUtils.isGranted()) {
+            return ExecResult(ok = false, stderr = "Shizuku 未授权，ADB 通道不可用（请点击授权）", denied = true)
         }
         return try {
             val output = shizukuExec(command)
@@ -35,39 +39,36 @@ class AdbExecutor : CommandExecutor {
     }
 
     /**
-     * 通过 Shizuku 的 binder 以 shell 身份执行命令。
-     * 实现：反射获取 Shizuku binder，transact 调用 exec。
-     * 若未集成 rikka API，则返回空输出（由上层降级）。
+     * 通过 Shizuku.newProcess 以 shell 身份执行命令并读取输出。
      */
     private fun shizukuExec(command: String): String {
+        try {
+            val process = Shizuku.newProcess(arrayOf("/system/bin/sh", "-c", command), null, null)
+            val output = process.inputStream.readBytes().toString(Charsets.UTF_8)
+            val err = process.errorStream.readBytes().toString(Charsets.UTF_8)
+            process.waitFor()
+            return output.ifBlank { err }.ifBlank { "(无输出)" }
+        } catch (e: Throwable) {
+            // 降级：老版本 API 走 legacy 通道
+            return legacyShizukuExec(command)
+        }
+    }
+
+    /** 兼容旧版 Shizuku：通过 binder transact 执行（兜底） */
+    private fun legacyShizukuExec(command: String): String {
         return try {
-            val clazz = Class.forName("rikka.shizuku.Shizuku")
-            val binder = clazz.getMethod("getBinder").invoke(null) as? IBinder ?: return ""
-            val remote = binder
+            val binder = Shizuku.getBinder() ?: return "Shizuku binder 不可用"
             val transact = Parcel.obtain()
             val reply = Parcel.obtain()
             transact.writeInterfaceToken("moe.shizuku.server.IShizukuService")
             transact.writeString(command)
-            // transaction code 为 ShizukuService.transact 的 exec 通道（版本相关）
-            remote.transact(2, transact, reply, 0)
+            binder.transact(2, transact, reply, 0)
             val out = reply.readString() ?: ""
             transact.recycle()
             reply.recycle()
             out
         } catch (e: Throwable) {
-            // 无 rikka API 依赖时，通过授权后的 shell 走 fallback
-            fallbackShellExec(command)
-        }
-    }
-
-    /** 无 Shizuku API 依赖时的 fallback：反射尝试 binderService 拉起命令 */
-    private fun fallbackShellExec(command: String): String {
-        return try {
-            val context = KaliDroidApp.instance
-            val clazz = Class.forName("rikka.shizuku.Shizuku")
-            clazz.getMethod("sudo", String::class.java).invoke(null, command) as? String ?: ""
-        } catch (e: Throwable) {
-            "Shizuku 通道未授权或未集成 API"
+            "Shizuku 通道未授权或执行失败: ${e.message}"
         }
     }
 }
