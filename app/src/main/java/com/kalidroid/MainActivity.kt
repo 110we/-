@@ -19,18 +19,27 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.kalidroid.kali.ProotDownloader
 import com.kalidroid.model.Tool
 import com.kalidroid.ui.dashboard.DashboardScreen
+import com.kalidroid.ui.init.InitScreen
 import com.kalidroid.ui.settings.SettingsScreen
 import com.kalidroid.ui.theme.KaliDroidTheme
 import com.kalidroid.ui.tools.ToolCatalog
 import com.kalidroid.ui.tools.ToolDetailScreen
 import com.kalidroid.ui.tools.ToolLibraryScreen
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.nio.charset.StandardCharsets
 
 class MainActivity : ComponentActivity() {
+
+    private val scope = CoroutineScope(Dispatchers.Main)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val notice = intent.getStringExtra("notice").orEmpty()
@@ -39,6 +48,52 @@ class MainActivity : ComponentActivity() {
         setContent {
             var darkTheme by rememberSaveable { mutableStateOf(true) }
             KaliDroidTheme(darkTheme = darkTheme) {
+                // ---- 初始化状态 ----
+                var initialized by rememberSaveable { mutableStateOf(checkInitialized()) }
+                var downloading by rememberSaveable { mutableStateOf(false) }
+                var progress by rememberSaveable { mutableStateOf(0f) }
+                var status by rememberSaveable { mutableStateOf("") }
+
+                if (!initialized) {
+                    // ---- 初始化门禁：动画页 + 一键下载核心资源 ----
+                    InitScreen(
+                        downloading = downloading,
+                        progress = progress,
+                        status = status,
+                        onInit = {
+                            if (downloading) return@InitScreen
+                            downloading = true
+                            progress = 0f
+                            status = "正在获取 proot 引擎…"
+                            scope.launch {
+                                val path = withContext(Dispatchers.IO) {
+                                    ProotDownloader.install(this@MainActivity) { p ->
+                                        // 进度回调在 IO 线程，切主线程更新 UI
+                                        scope.launch {
+                                            progress = p
+                                            status = when {
+                                                p < 0.15f -> "连接 Termux 源…"
+                                                p < 0.8f -> "下载 proot 引擎… ${(p * 100).toInt()}%"
+                                                p < 0.95f -> "解析 deb 包…"
+                                                else -> "释放二进制…"
+                                            }
+                                        }
+                                    }
+                                }
+                                if (path != null) {
+                                    initialized = true
+                                    status = "✅ 初始化完成"
+                                } else {
+                                    downloading = false
+                                    status = "❌ 初始化失败，请检查网络后重试"
+                                }
+                            }
+                        }
+                    )
+                    return@KaliDroidTheme
+                }
+
+                // ---- 主界面 ----
                 val nav = rememberNavController()
                 val backStack by nav.currentBackStackEntryAsState()
                 val route = backStack?.destination?.route.orEmpty()
@@ -104,6 +159,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    /** 检查核心资源（proot 引擎）是否就绪 */
+    private fun checkInitialized(): Boolean {
+        val binDir = filesDir.resolve("bin")
+        val proot = binDir.resolve("proot")
+        return proot.isFile && proot.length() > 100_000
     }
 
     private fun toolRoute(tool: Tool): String {

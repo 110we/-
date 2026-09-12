@@ -21,33 +21,45 @@ object ProotDownloader {
 
     /**
      * 在线下载并安装 proot。
+     * @param onProgress 下载进度回调 0..1
      * @return 成功返回 proot 文件路径，失败返回 null
      */
-    fun install(context: Context = KaliDroidApp.instance): String? {
+    fun install(context: Context = KaliDroidApp.instance, onProgress: ((Float) -> Unit)? = null): String? {
         val binDir = File(context.filesDir, "bin").apply { mkdirs() }
         val prootFile = File(binDir, "proot")
         val libFile = File(binDir, "libproot.so")
 
+        // 已安装直接返回
+        if (prootFile.isFile && prootFile.length() > 100_000) {
+            return prootFile.absolutePath
+        }
+
         return try {
+            onProgress?.invoke(0.05f)
             // 1. 拉取 Packages 索引，解析 proot 的 deb 下载地址
             val packages = httpGet(PACKAGES_URL) ?: return null
+            onProgress?.invoke(0.15f)
             val filename = parseFilename(packages, "proot") ?: return null
             val debUrl = DEB_BASE + filename
             println("KaliDroid proot deb: $debUrl")
 
-            // 2. 下载 deb
-            val deb = httpGetBytes(debUrl) ?: return null
+            // 2. 下载 deb（带进度）
+            val deb = httpGetBytes(debUrl) { p -> onProgress?.invoke(0.15f + p * 0.6f) } ?: return null
             if (deb.size < 100_000) return null
+            onProgress?.invoke(0.8f)
 
             // 3. 解析 ar 归档，取出 data.tar.xz
             val dataTarXz = extractFromDeb(deb, "data.tar.xz") ?: return null
+            onProgress?.invoke(0.85f)
 
             // 4. 流式解出 proot 与 libproot.so
             extractTarXz(dataTarXz, binDir, prootFile, libFile)
+            onProgress?.invoke(0.95f)
 
             // 5. 赋可执行权限
             prootFile.setExecutable(true)
             if (!prootFile.isFile || prootFile.length() < 100_000) return null
+            onProgress?.invoke(1f)
             prootFile.absolutePath
         } catch (e: Exception) {
             println("KaliDroid proot 下载失败: ${e.message}")
@@ -80,13 +92,25 @@ object ProotDownloader {
         s
     }.getOrNull()
 
-    private fun httpGetBytes(url: String): ByteArray? = runCatching {
+    private fun httpGetBytes(url: String, onProgress: ((Float) -> Unit)? = null): ByteArray? = runCatching {
         val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
         conn.connectTimeout = 15_000
         conn.readTimeout = 60_000
         conn.instanceFollowRedirects = true
         if (conn.responseCode !in 200..299) return null
-        val b = conn.inputStream.readBytes()
+        val total = conn.contentLengthLong
+        val input = conn.inputStream
+        val bos = ByteArrayOutputStream()
+        val buf = ByteArray(128 * 1024)
+        var read: Int
+        var done = 0L
+        while (input.read(buf).also { read = it } != -1) {
+            bos.write(buf, 0, read)
+            done += read
+            if (total > 0) onProgress?.invoke((done.toFloat() / total).coerceIn(0f, 1f))
+        }
+        val b = bos.toByteArray()
+        input.close()
         conn.disconnect()
         b
     }.getOrNull()
