@@ -7,6 +7,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   assemble-debug:
     runs-on: ubuntu-latest
@@ -42,3 +45,14 @@ jobs:
           name: kalidroid-ops-debug
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+
+      - name: Publish to Release (nightly)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          chmod +x gradlew
+          gh release delete nightly --yes --cleanup-tag 2>/dev/null || true
+          gh release create nightly app/build/outputs/apk/debug/*.apk \
+            --title "KaliDroid Nightly" \
+            --notes "自动构建 APK（每次 push 到 main 更新）" \
+            --prerelease
