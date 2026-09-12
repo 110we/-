@@ -77,7 +77,7 @@ class MainActivity : ComponentActivity() {
                             status = "正在获取 proot 引擎…"
                             scope.launch {
                                 val path = withContext(Dispatchers.IO) {
-                                    ProotDownloader.install(this@MainActivity) { p ->
+                                    ProotDownloader.install(this@MainActivity, onProgress = { p ->
                                         // 进度回调在 IO 线程，切主线程更新 UI
                                         scope.launch {
                                             progress = p
@@ -88,7 +88,7 @@ class MainActivity : ComponentActivity() {
                                                 else -> "释放二进制…"
                                             }
                                         }
-                                    }
+                                    })
                                 }
                                 if (path != null) {
                                     initialized = true
