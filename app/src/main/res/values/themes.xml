@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.KaliDroid" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#07111B</item>
+        <item name="android:navigationBarColor">#07111B</item>
+        <item name="android:windowBackground">#07111B</item>
+    </style>
+</resources>

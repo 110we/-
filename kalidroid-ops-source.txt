@@ -1,0 +1,3982 @@
+KaliDroid Ops 源码纯文本包
+文件数: 87
+用法: 按 ===== FILE: 路径 ===== 切回原文件
+未包含: gradle-wrapper.jar package-lock.json docs/free-apis.md
+
+===== FILE: .github/workflows/android.yml =====
+name: Android CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  assemble-debug:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Accept Android licenses
+        run: yes | sdkmanager --licenses >/dev/null || true
+
+      - name: Install NDK
+        run: sdkmanager --install "ndk;27.0.12077973"
+
+      - name: Make gradlew executable
+        run: chmod +x gradlew
+
+      - name: Assemble debug APK
+        run: ./gradlew :app:assembleDebug --stacktrace --no-daemon
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: kalidroid-ops-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+===== END FILE: .github/workflows/android.yml =====
+
+===== FILE: .gitignore =====
+.gradle/
+build/
+app/build/
+.idea/
+local.properties
+*.iml
+.DS_Store
+backend/node_modules/
+frontend/node_modules/
+frontend/dist/
+backend/data/
+===== END FILE: .gitignore =====
+
+===== FILE: README.md =====
+# KaliDroid Ops
+
+执行链路按架构图落地：
+
+Vite + React UI → WebSocket → Node.js 后端
+- 调用系统命令 → Android Shell / ADB（白名单）
+- 或经 WebSocket → Android 原生执行器 → Root / ADB / Normal（Root/ADB 锁定，Normal 可执行）
+
+```
+app/src/main/java/com/kalidroid/
+├── KaliDroidApp.kt
+├── MainActivity.kt
+├── PermissionChooserActivity.kt
+├── permission/          CommandExecutor + Root/Adb/Normal
+├── kali/                Container / Rootfs / Mount（锁定）
+├── terminal/            TerminalActivity + TerminalView
+├── ui/                  dashboard / tools / settings / theme
+├── workflow/
+├── hardware/            只读拒绝
+├── bridge/              NativeExecutorBridge.kt
+├── jni/
+├── model/
+└── utils/
+```
+
+## Web 预览
+
+```bash
+cd backend && npm install && npm run dev
+cd frontend && npm install && npm run dev
+```
+
+设置里可切换两条通道。原生执行器需在 Android 设置页连接 `ws://<host>:3001/ws`。
+
+## 编译 APK
+
+本仓库已带 Gradle Wrapper。本机无 JDK/SDK 时，用 GitHub Actions 出包：
+
+1. 把完整源码推到 `origin/main`
+2. 打开仓库 Actions，跑 `Android CI`
+3. 从 Artifacts 下载 `kalidroid-ops-debug`
+
+本地有 Android Studio 时：
+
+```bash
+./gradlew :app:assembleDebug
+```
+
+产物路径：`app/build/outputs/apk/debug/app-debug.apk`
+===== END FILE: README.md =====
+
+===== FILE: app/build.gradle.kts =====
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
+}
+
+android {
+    namespace = "com.kalidroid"
+    compileSdk = 35
+    ndkVersion = "27.0.12077973"
+
+    defaultConfig {
+        applicationId = "com.kalidroid"
+        minSdk = 26
+        targetSdk = 35
+        versionCode = 1
+        versionName = "1.0.0"
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++17"
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions {
+        jvmTarget = "17"
+    }
+    buildFeatures {
+        compose = true
+    }
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+        }
+    }
+}
+
+dependencies {
+    implementation(platform("androidx.compose:compose-bom:2024.10.01"))
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.compose.material3:material3")
+    implementation("androidx.activity:activity-compose:1.9.3")
+    implementation("androidx.navigation:navigation-compose:2.8.3")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("com.google.code.gson:gson:2.11.0")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    debugImplementation("androidx.compose.ui:ui-tooling")
+}
+===== END FILE: app/build.gradle.kts =====
+
+===== FILE: app/proguard-rules.pro =====
+
+===== END FILE: app/proguard-rules.pro =====
+
+===== FILE: app/src/main/AndroidManifest.xml =====
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:name=".KaliDroidApp"
+        android:allowBackup="false"
+        android:icon="@android:drawable/ic_menu_manage"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.KaliDroid">
+        <activity
+            android:name=".PermissionChooserActivity"
+            android:exported="true"
+            android:theme="@style/Theme.KaliDroid">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <activity
+            android:name=".MainActivity"
+            android:exported="false"
+            android:theme="@style/Theme.KaliDroid" />
+        <activity
+            android:name=".terminal.TerminalActivity"
+            android:exported="false"
+            android:theme="@style/Theme.KaliDroid" />
+    </application>
+</manifest>
+===== END FILE: app/src/main/AndroidManifest.xml =====
+
+===== FILE: app/src/main/cpp/CMakeLists.txt =====
+cmake_minimum_required(VERSION 3.22.1)
+project("kalidroid")
+
+add_library(kalidroid SHARED native-lib.cpp)
+find_library(log-lib log)
+target_link_libraries(kalidroid ${log-lib})
+===== END FILE: app/src/main/cpp/CMakeLists.txt =====
+
+===== FILE: app/src/main/cpp/native-lib.cpp =====
+#include <jni.h>
+#include <string>
+#include <sys/utsname.h>
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_kalidroid_jni_NativeLib_version(JNIEnv *env, jobject /* this */) {
+    return env->NewStringUTF("kalidroid-jni-1.0.0-ops");
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_kalidroid_jni_NativeLib_hostFingerprint(JNIEnv *env, jobject /* this */) {
+    struct utsname u{};
+    if (uname(&u) != 0) {
+        return env->NewStringUTF("unknown");
+    }
+    std::string out = std::string(u.sysname) + " " + u.release + " " + u.machine;
+    return env->NewStringUTF(out.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_kalidroid_jni_NativeLib_denyPrivilegedCall(JNIEnv *env, jobject /* this */, jstring name) {
+    const char *raw = env->GetStringUTFChars(name, nullptr);
+    std::string msg = std::string("JNI 拒绝特权调用: ") + (raw ? raw : "unknown");
+    env->ReleaseStringUTFChars(name, raw);
+    return env->NewStringUTF(msg.c_str());
+}
+===== END FILE: app/src/main/cpp/native-lib.cpp =====
+
+===== FILE: app/src/main/java/com/kalidroid/KaliDroidApp.kt =====
+package com.kalidroid
+
+import android.app.Application
+import com.kalidroid.kali.KaliContainer
+import com.kalidroid.kali.MountManager
+import com.kalidroid.kali.RootfsManager
+import com.kalidroid.permission.PermissionManager
+import com.kalidroid.workflow.WorkflowEngine
+import com.kalidroid.workflow.WorkflowParser
+
+class KaliDroidApp : Application() {
+    lateinit var permissionManager: PermissionManager
+        private set
+    lateinit var kaliContainer: KaliContainer
+        private set
+    lateinit var workflowEngine: WorkflowEngine
+        private set
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+        permissionManager = PermissionManager(this)
+        kaliContainer = KaliContainer(RootfsManager(), MountManager())
+        workflowEngine = WorkflowEngine(permissionManager.getExecutor(), WorkflowParser())
+    }
+
+    companion object {
+        lateinit var instance: KaliDroidApp
+            private set
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/KaliDroidApp.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/MainActivity.kt =====
+package com.kalidroid
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.navigation.NavType
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
+import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
+import com.kalidroid.model.Tool
+import com.kalidroid.ui.dashboard.DashboardScreen
+import com.kalidroid.ui.settings.SettingsScreen
+import com.kalidroid.ui.theme.KaliDroidTheme
+import com.kalidroid.ui.tools.ToolCatalog
+import com.kalidroid.ui.tools.ToolDetailScreen
+import com.kalidroid.ui.tools.ToolLibraryScreen
+import java.net.URLDecoder
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val notice = intent.getStringExtra("notice").orEmpty()
+        val requestedMode = intent.getStringExtra("requestedMode").orEmpty()
+
+        setContent {
+            var darkTheme by rememberSaveable { mutableStateOf(true) }
+            KaliDroidTheme(darkTheme = darkTheme) {
+                val nav = rememberNavController()
+                val backStack by nav.currentBackStackEntryAsState()
+                val route = backStack?.destination?.route.orEmpty()
+                Scaffold(
+                    bottomBar = {
+                        NavigationBar {
+                            NavigationBarItem(
+                                selected = route.startsWith("dashboard"),
+                                onClick = { nav.navigate("dashboard") { launchSingleTop = true } },
+                                icon = { Text("D") },
+                                label = { Text("仪表盘") }
+                            )
+                            NavigationBarItem(
+                                selected = route.startsWith("tools") || route.startsWith("tool/"),
+                                onClick = { nav.navigate("tools") { launchSingleTop = true } },
+                                icon = { Text("T") },
+                                label = { Text("工具库") }
+                            )
+                            NavigationBarItem(
+                                selected = route.startsWith("settings"),
+                                onClick = { nav.navigate("settings") { launchSingleTop = true } },
+                                icon = { Text("S") },
+                                label = { Text("设置") }
+                            )
+                        }
+                    }
+                ) { padding ->
+                    NavHost(
+                        navController = nav,
+                        startDestination = "dashboard",
+                        modifier = Modifier.padding(padding)
+                    ) {
+                        composable("dashboard") {
+                            DashboardScreen(
+                                notice = notice,
+                                requestedMode = requestedMode,
+                                onOpenTools = { nav.navigate("tools") },
+                                onOpenSettings = { nav.navigate("settings") },
+                                onOpenTool = { tool -> nav.navigate(toolRoute(tool)) }
+                            )
+                        }
+                        composable("tools") {
+                            ToolLibraryScreen { tool -> nav.navigate(toolRoute(tool)) }
+                        }
+                        composable(
+                            route = "tool/{name}",
+                            arguments = listOf(navArgument("name") { type = NavType.StringType })
+                        ) { entry ->
+                            val name = URLDecoder.decode(
+                                entry.arguments?.getString("name").orEmpty(),
+                                StandardCharsets.UTF_8.name()
+                            )
+                            val tool = ToolCatalog.find(name) ?: Tool(name, "未知", "", "echo")
+                            ToolDetailScreen(tool = tool, onBack = { nav.popBackStack() })
+                        }
+                        composable("settings") {
+                            SettingsScreen(
+                                darkTheme = darkTheme,
+                                onToggleTheme = { darkTheme = !darkTheme }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun toolRoute(tool: Tool): String {
+        val name = URLEncoder.encode(tool.name, StandardCharsets.UTF_8.name())
+        return "tool/$name"
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/MainActivity.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/PermissionChooserActivity.kt =====
+package com.kalidroid
+
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.kalidroid.permission.ExecutorMode
+import com.kalidroid.ui.theme.KaliDroidTheme
+import com.kalidroid.utils.RootUtils
+import com.kalidroid.utils.ShizukuUtils
+
+class PermissionChooserActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val pm = KaliDroidApp.instance.permissionManager
+        val detected = pm.detect()
+
+        setContent {
+            KaliDroidTheme(darkTheme = true) {
+                Surface(Modifier.fillMaxSize()) {
+                    Column(
+                        modifier = Modifier.fillMaxSize().padding(24.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp)
+                    ) {
+                        Text("KaliDroid", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
+                        Text("启动权限选择", style = MaterialTheme.typography.headlineMedium)
+                        Text("PermissionManager 检测、存储、获取执行器。")
+                        Text("normal=${detected["normal"]}  adb=${detected["adb"]}  root=${detected["root"]}")
+                        Text("su=${RootUtils.hasSu()}  Shizuku=${ShizukuUtils.isRunning()}")
+
+                        Button(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { enter(ExecutorMode.NORMAL) }
+                        ) { Text("NormalExecutor  ·  Runtime.exec()") }
+
+                        OutlinedButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { enter(ExecutorMode.ADB, pm.executorFor(ExecutorMode.ADB).exec("id").stderr) }
+                        ) { Text("AdbExecutor  ·  Shizuku（锁定）") }
+
+                        OutlinedButton(
+                            modifier = Modifier.fillMaxWidth(),
+                            onClick = { enter(ExecutorMode.ROOT, pm.executorFor(ExecutorMode.ROOT).exec("id").stderr) }
+                        ) { Text("RootExecutor  ·  su -c（锁定）") }
+
+                        Text("Root / ADB 选择会被拒绝并回退普通执行器。", color = MaterialTheme.colorScheme.secondary)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun enter(mode: ExecutorMode, notice: String? = null) {
+        KaliDroidApp.instance.permissionManager.persist(ExecutorMode.NORMAL)
+        val intent = Intent(this, MainActivity::class.java)
+        intent.putExtra("requestedMode", mode.name)
+        if (!notice.isNullOrBlank()) intent.putExtra("notice", notice)
+        startActivity(intent)
+        finish()
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/PermissionChooserActivity.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/bridge/NativeExecutorBridge.kt =====
+package com.kalidroid.bridge
+
+import com.google.gson.Gson
+import com.google.gson.JsonObject
+import com.kalidroid.KaliDroidApp
+import com.kalidroid.permission.ExecutorMode
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import java.util.concurrent.TimeUnit
+
+class NativeExecutorBridge(
+    private val scope: CoroutineScope
+) {
+    private val gson = Gson()
+    private val client = OkHttpClient.Builder()
+        .readTimeout(0, TimeUnit.MILLISECONDS)
+        .build()
+    private var socket: WebSocket? = null
+    private var job: Job? = null
+    @Volatile var connected: Boolean = false
+        private set
+
+    fun connect(url: String) {
+        disconnect()
+        val request = Request.Builder().url(url).build()
+        socket = client.newWebSocket(request, object : WebSocketListener() {
+            override fun onOpen(webSocket: WebSocket, response: Response) {
+                connected = true
+                webSocket.send("""{"type":"hello","role":"android"}""")
+            }
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                val obj = runCatching { gson.fromJson(text, JsonObject::class.java) }.getOrNull() ?: return
+                if (obj.get("type")?.asString != "exec") return
+                val id = obj.get("id")?.asString.orEmpty()
+                val command = obj.get("command")?.asString.orEmpty()
+                job = scope.launch(Dispatchers.IO) {
+                    val requested = obj.get("mode")?.asString ?: "NORMAL"
+                    val mode = runCatching { ExecutorMode.valueOf(requested) }.getOrDefault(ExecutorMode.NORMAL)
+                    val executor = KaliDroidApp.instance.permissionManager.executorFor(mode)
+                    val result = executor.exec(command)
+                    val payload = mapOf(
+                        "type" to "result",
+                        "id" to id,
+                        "ok" to result.ok,
+                        "stdout" to result.stdout,
+                        "stderr" to result.stderr,
+                        "denied" to result.denied,
+                        "executor" to mode.name
+                    )
+                    webSocket.send(gson.toJson(payload))
+                }
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                connected = false
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                connected = false
+            }
+        })
+    }
+
+    fun disconnect() {
+        job?.cancel()
+        socket?.close(1000, "bye")
+        socket = null
+        connected = false
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/bridge/NativeExecutorBridge.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/hardware/BluetoothController.kt =====
+package com.kalidroid.hardware
+
+class BluetoothController {
+    fun scanDevices(): HardwareResult = HardwareResult(false, "蓝牙扫描已关闭。")
+}
+===== END FILE: app/src/main/java/com/kalidroid/hardware/BluetoothController.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/hardware/CameraController.kt =====
+package com.kalidroid.hardware
+
+class CameraController {
+    fun captureEvidence(): HardwareResult = HardwareResult(false, "摄像头取证已关闭。")
+}
+===== END FILE: app/src/main/java/com/kalidroid/hardware/CameraController.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/hardware/GpsController.kt =====
+package com.kalidroid.hardware
+
+class GpsController {
+    fun spoof(lat: Double, lon: Double): HardwareResult {
+        return HardwareResult(false, "拒绝模拟位置: $lat,$lon")
+    }
+
+    fun read(): HardwareResult = HardwareResult(false, "GPS 采集已关闭。")
+}
+===== END FILE: app/src/main/java/com/kalidroid/hardware/GpsController.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/hardware/HardwareResult.kt =====
+package com.kalidroid.hardware
+
+data class HardwareResult(
+    val ok: Boolean,
+    val message: String
+)
+===== END FILE: app/src/main/java/com/kalidroid/hardware/HardwareResult.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/hardware/WifiController.kt =====
+package com.kalidroid.hardware
+
+class WifiController {
+    fun scan(): HardwareResult = HardwareResult(false, "Wi-Fi 扫描已关闭。")
+
+    fun inject(payload: String): HardwareResult {
+        return HardwareResult(false, "拒绝 Wi-Fi 注入。payload 长度=${payload.length}")
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/hardware/WifiController.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/jni/NativeLib.kt =====
+package com.kalidroid.jni
+
+object NativeLib {
+    init {
+        runCatching { System.loadLibrary("kalidroid") }
+    }
+
+    external fun version(): String
+    external fun hostFingerprint(): String
+    external fun denyPrivilegedCall(name: String): String
+}
+===== END FILE: app/src/main/java/com/kalidroid/jni/NativeLib.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/jni/native-lib.cpp =====
+#include <jni.h>
+#include <string>
+#include <sys/utsname.h>
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_kalidroid_jni_NativeLib_version(JNIEnv *env, jobject /* this */) {
+    return env->NewStringUTF("kalidroid-jni-1.0.0-ops");
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_kalidroid_jni_NativeLib_hostFingerprint(JNIEnv *env, jobject /* this */) {
+    struct utsname u{};
+    if (uname(&u) != 0) {
+        return env->NewStringUTF("unknown");
+    }
+    std::string out = std::string(u.sysname) + " " + u.release + " " + u.machine;
+    return env->NewStringUTF(out.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_kalidroid_jni_NativeLib_denyPrivilegedCall(JNIEnv *env, jobject /* this */, jstring name) {
+    const char *raw = env->GetStringUTFChars(name, nullptr);
+    std::string msg = std::string("JNI 拒绝特权调用: ") + (raw ? raw : "unknown");
+    env->ReleaseStringUTFChars(name, raw);
+    return env->NewStringUTF(msg.c_str());
+}
+===== END FILE: app/src/main/java/com/kalidroid/jni/native-lib.cpp =====
+
+===== FILE: app/src/main/java/com/kalidroid/kali/KaliContainer.kt =====
+package com.kalidroid.kali
+
+data class ContainerState(
+    val running: Boolean,
+    val message: String
+)
+
+class KaliContainer(
+    private val rootfsManager: RootfsManager,
+    private val mountManager: MountManager
+) {
+    fun start(): ContainerState {
+        return ContainerState(false, "Kali 容器已禁用。不启动 chroot，不加载 Kali 工具库。")
+    }
+
+    fun stop(): ContainerState {
+        mountManager.unmountAll()
+        return ContainerState(false, "容器未运行。")
+    }
+
+    fun exec(command: String): ContainerState {
+        return ContainerState(false, "拒绝在 Kali 容器内执行: $command")
+    }
+
+    fun status(): ContainerState {
+        val rootfs = rootfsManager.status()
+        val mounts = mountManager.status()
+        return ContainerState(false, "rootfs=${rootfs.message}; mounts=${mounts.message}")
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/kali/KaliContainer.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/kali/MountManager.kt =====
+package com.kalidroid.kali
+
+data class MountStatus(
+    val mounted: Boolean,
+    val message: String
+)
+
+class MountManager {
+    fun mountProc(): MountStatus = locked("/proc")
+    fun mountDev(): MountStatus = locked("/dev")
+    fun mountSys(): MountStatus = locked("/sys")
+
+    fun unmountAll(): MountStatus = MountStatus(false, "无挂载点需要卸载。")
+
+    fun status(): MountStatus = MountStatus(false, "/proc /dev /sys 均未由本应用挂载")
+
+    private fun locked(point: String) = MountStatus(
+        mounted = false,
+        message = "拒绝挂载 $point。工作台不执行 mount/umount。"
+    )
+}
+===== END FILE: app/src/main/java/com/kalidroid/kali/MountManager.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/kali/RootfsManager.kt =====
+package com.kalidroid.kali
+
+data class RootfsStatus(
+    val present: Boolean,
+    val message: String
+)
+
+class RootfsManager {
+    fun extract(): RootfsStatus = RootfsStatus(false, "拒绝解压 Kali 根文件系统。")
+
+    fun verify(): RootfsStatus = RootfsStatus(false, "未安装 rootfs，校验跳过。")
+
+    fun update(): RootfsStatus = RootfsStatus(false, "拒绝更新 Kali rootfs。")
+
+    fun status(): RootfsStatus = RootfsStatus(false, "rootfs 未部署")
+}
+===== END FILE: app/src/main/java/com/kalidroid/kali/RootfsManager.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/model/Report.kt =====
+package com.kalidroid.model
+
+data class Report(
+    val title: String,
+    val content: String,
+    val format: String = "markdown",
+    val timestamp: Long = System.currentTimeMillis()
+)
+===== END FILE: app/src/main/java/com/kalidroid/model/Report.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/model/Tool.kt =====
+package com.kalidroid.model
+
+data class Tool(
+    val name: String,
+    val category: String,
+    val description: String,
+    val command: String
+)
+===== END FILE: app/src/main/java/com/kalidroid/model/Tool.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/model/Workflow.kt =====
+package com.kalidroid.model
+
+import com.kalidroid.workflow.WorkflowNode
+
+data class Workflow(
+    val id: String,
+    val name: String,
+    val nodes: List<WorkflowNode>,
+    val status: String = "idle",
+    val description: String = ""
+)
+===== END FILE: app/src/main/java/com/kalidroid/model/Workflow.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/permission/AdbExecutor.kt =====
+package com.kalidroid.permission
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/**
+ * Android 原生执行器之一：ADB / Shizuku。
+ * 接口位保留，运行时永久关闭，不发起 ADB 或提权。
+ */
+class AdbExecutor : CommandExecutor {
+    override fun exec(command: String): ExecResult = ExecResult(
+        ok = false,
+        stderr = "AdbExecutor 已锁定，Shizuku 通道未启用。命令: $command",
+        denied = true
+    )
+
+    override suspend fun execAsync(command: String): ExecResult = withContext(Dispatchers.IO) {
+        exec(command)
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/permission/AdbExecutor.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/permission/CommandExecutor.kt =====
+package com.kalidroid.permission
+
+interface CommandExecutor {
+    fun exec(command: String): ExecResult
+    suspend fun execAsync(command: String): ExecResult
+}
+
+data class ExecResult(
+    val ok: Boolean,
+    val stdout: String = "",
+    val stderr: String = "",
+    val exitCode: Int = -1,
+    val denied: Boolean = false
+)
+===== END FILE: app/src/main/java/com/kalidroid/permission/CommandExecutor.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/permission/NormalExecutor.kt =====
+package com.kalidroid.permission
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+class NormalExecutor : CommandExecutor {
+    private val allowlist = setOf(
+        "date", "uname", "hostname", "whoami", "id", "uptime", "pwd", "df", "free", "ls", "echo"
+    )
+
+    override fun exec(command: String): ExecResult {
+        val token = command.trim().split("\\s+".toRegex()).firstOrNull().orEmpty()
+        if (token !in allowlist) {
+            return ExecResult(
+                ok = false,
+                stderr = "命令不在白名单: $token。允许: ${allowlist.joinToString(" ")}",
+                denied = true
+            )
+        }
+        return try {
+            val process = Runtime.getRuntime().exec(arrayOf(token))
+            val stdout = process.inputStream.bufferedReader().readText()
+            val stderr = process.errorStream.bufferedReader().readText()
+            val code = process.waitFor()
+            ExecResult(ok = code == 0, stdout = stdout, stderr = stderr, exitCode = code)
+        } catch (e: Exception) {
+            ExecResult(ok = false, stderr = e.message ?: "exec failed")
+        }
+    }
+
+    override suspend fun execAsync(command: String): ExecResult = withContext(Dispatchers.IO) {
+        exec(command)
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/permission/NormalExecutor.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/permission/PermissionManager.kt =====
+package com.kalidroid.permission
+
+import android.content.Context
+import com.kalidroid.utils.RootUtils
+import com.kalidroid.utils.ShizukuUtils
+
+enum class ExecutorMode {
+    NORMAL,
+    ADB,
+    ROOT
+}
+
+class PermissionManager(private val context: Context) {
+    private val prefs = context.getSharedPreferences("kalidroid.permission", Context.MODE_PRIVATE)
+
+    private val normalExecutor = NormalExecutor()
+    private val adbExecutor = AdbExecutor()
+    private val rootExecutor = RootExecutor()
+
+    fun detect(): Map<String, Boolean> = mapOf(
+        "normal" to true,
+        "adb" to ShizukuUtils.isRunning(),
+        "root" to RootUtils.hasSu()
+    )
+
+    fun currentMode(): ExecutorMode {
+        val stored = prefs.getString(KEY_MODE, ExecutorMode.NORMAL.name) ?: ExecutorMode.NORMAL.name
+        val mode = runCatching { ExecutorMode.valueOf(stored) }.getOrDefault(ExecutorMode.NORMAL)
+        return if (mode == ExecutorMode.NORMAL) mode else ExecutorMode.NORMAL
+    }
+
+    fun persist(mode: ExecutorMode) {
+        val safe = if (mode == ExecutorMode.NORMAL) mode else ExecutorMode.NORMAL
+        prefs.edit().putString(KEY_MODE, safe.name).apply()
+    }
+
+    fun getExecutor(): CommandExecutor = when (currentMode()) {
+        ExecutorMode.NORMAL -> normalExecutor
+        ExecutorMode.ADB -> adbExecutor
+        ExecutorMode.ROOT -> rootExecutor
+    }
+
+    fun executorFor(mode: ExecutorMode): CommandExecutor = when (mode) {
+        ExecutorMode.NORMAL -> normalExecutor
+        ExecutorMode.ADB -> adbExecutor
+        ExecutorMode.ROOT -> rootExecutor
+    }
+
+    companion object {
+        private const val KEY_MODE = "executor_mode"
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/permission/PermissionManager.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/permission/RootExecutor.kt =====
+package com.kalidroid.permission
+
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+/**
+ * Android 原生执行器之一：Root。
+ * 接口位保留，运行时永久拒绝 su -c。
+ */
+class RootExecutor : CommandExecutor {
+    override fun exec(command: String): ExecResult = ExecResult(
+        ok = false,
+        stderr = "RootExecutor 已锁定，拒绝 su -c \"$command\"",
+        denied = true
+    )
+
+    override suspend fun execAsync(command: String): ExecResult = withContext(Dispatchers.IO) {
+        exec(command)
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/permission/RootExecutor.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/terminal/TerminalActivity.kt =====
+package com.kalidroid.terminal
+
+import android.os.Bundle
+import android.widget.Button
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import androidx.activity.ComponentActivity
+import androidx.lifecycle.lifecycleScope
+import com.kalidroid.KaliDroidApp
+import kotlinx.coroutines.launch
+
+class TerminalActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val executor = KaliDroidApp.instance.permissionManager.getExecutor()
+
+        val terminalView = TerminalView(this).apply {
+            setPadding(16, 16, 16, 16)
+        }
+        val input = EditText(this).apply {
+            hint = "白名单命令: uname"
+            setText("uname")
+            setTextColor(0xFFDFF7F1.toInt())
+            setHintTextColor(0xFF8FB4B0.toInt())
+            setBackgroundColor(0xFF07131D.toInt())
+        }
+        val run = Button(this).apply { text = "运行" }
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(input, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(run)
+        }
+        val scroll = ScrollView(this).apply { addView(terminalView) }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF07111B.toInt())
+            addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(row)
+        }
+        setContentView(root)
+
+        fun execNow() {
+            val cmd = input.text.toString()
+            terminalView.append("$ $cmd")
+            lifecycleScope.launch {
+                val result = executor.execAsync(cmd)
+                val body = result.stdout.ifBlank { result.stderr }
+                terminalView.append(body.ifBlank { "(empty)" })
+                scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
+            }
+        }
+        run.setOnClickListener { execNow() }
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/terminal/TerminalActivity.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/terminal/TerminalView.kt =====
+package com.kalidroid.terminal
+
+import android.content.Context
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Typeface
+import android.util.AttributeSet
+import android.view.View
+
+class TerminalView @JvmOverloads constructor(
+    context: Context,
+    attrs: AttributeSet? = null
+) : View(context, attrs) {
+
+    private val lines = mutableListOf(AnsiLine("KaliDroid terminal ready."))
+    private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.parseColor("#DFF7F1")
+        textSize = 34f
+        typeface = Typeface.MONOSPACE
+    }
+    private val bgPaint = Paint().apply { color = Color.parseColor("#02080D") }
+
+    fun append(raw: String) {
+        raw.split('\n').forEach { line ->
+            lines += AnsiLine(stripAnsi(line))
+        }
+        while (lines.size > 200) lines.removeAt(0)
+        requestLayout()
+        invalidate()
+    }
+
+    fun clear() {
+        lines.clear()
+        invalidate()
+    }
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        val h = (lines.size * lineHeight() + paddingTop + paddingBottom + 24).toInt().coerceAtLeast(200)
+        setMeasuredDimension(MeasureSpec.getSize(widthMeasureSpec), h)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
+        var y = paddingTop + paint.textSize
+        lines.forEach { line ->
+            paint.color = line.color
+            canvas.drawText(line.text, paddingLeft.toFloat() + 16f, y, paint)
+            y += lineHeight()
+        }
+    }
+
+    private fun lineHeight(): Float = paint.textSize + 14f
+
+    private fun stripAnsi(input: String): String {
+        return ANSI_REGEX.replace(input, "")
+    }
+
+    data class AnsiLine(
+        val text: String,
+        val color: Int = Color.parseColor("#3DE0C5")
+    )
+
+    companion object {
+        private val ANSI_REGEX = Regex("\\u001B\\[[0-9;]*[A-Za-z]")
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/terminal/TerminalView.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/terminal/TxtConsoleActivity.kt =====
+package com.kalidroid.terminal
+
+import android.graphics.Color
+import android.graphics.Typeface
+import android.os.Bundle
+import android.view.inputmethod.EditorInfo
+import android.widget.EditText
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.lifecycle.lifecycleScope
+import com.kalidroid.KaliDroidApp
+import com.kalidroid.ui.tools.ToolCatalog
+import kotlinx.coroutines.launch
+
+class TxtConsoleActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val executor = KaliDroidApp.instance.permissionManager.getExecutor()
+        val tools = ToolCatalog.items
+
+        val log = TextView(this).apply {
+            setTextColor(Color.parseColor("#C8C8C8"))
+            typeface = Typeface.MONOSPACE
+            textSize = 14f
+            setPadding(24, 24, 24, 24)
+            setTextIsSelectable(true)
+        }
+        val scroll = ScrollView(this).apply {
+            setBackgroundColor(Color.BLACK)
+            addView(log)
+        }
+        val input = EditText(this).apply {
+            setTextColor(Color.parseColor("#C8C8C8"))
+            setHintTextColor(Color.parseColor("#666666"))
+            setBackgroundColor(Color.BLACK)
+            typeface = Typeface.MONOSPACE
+            hint = "编号或命令"
+            imeOptions = EditorInfo.IME_ACTION_DONE
+            setSingleLine()
+        }
+
+        fun help(): String {
+            val lines = mutableListOf("KaliDroid TXT", "输入编号或命令直接调用工具。", "", "help / status", "")
+            tools.forEachIndexed { i, tool ->
+                lines += "${(i + 1).toString().padStart(2, ' ')}  ${tool.command.padEnd(10)} ${tool.name}"
+            }
+            return lines.joinToString("\n")
+        }
+
+        log.text = help()
+
+        fun append(chunk: String) {
+            log.append("\n$chunk")
+            scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
+        }
+
+        fun runLine(raw: String) {
+            val cmd = raw.trim()
+            if (cmd.isEmpty()) return
+            append("> $cmd")
+            when (cmd.lowercase()) {
+                "help" -> append(help())
+                "status" -> append("executor=${KaliDroidApp.instance.permissionManager.currentMode()}")
+                else -> {
+                    val index = cmd.toIntOrNull()
+                    val tool = if (index != null && index in 1..tools.size) tools[index - 1]
+                    else tools.find { it.command == cmd || it.name == cmd }
+                    val command = tool?.command ?: cmd
+                    lifecycleScope.launch {
+                        val result = executor.execAsync(command)
+                        append("$ $command\n" + result.stdout.ifBlank { result.stderr })
+                    }
+                }
+            }
+        }
+
+        input.setOnEditorActionListener { _, _, _ ->
+            runLine(input.text.toString())
+            input.setText("")
+            true
+        }
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.BLACK)
+            addView(scroll, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
+            addView(input)
+        }
+        setContentView(root)
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/terminal/TxtConsoleActivity.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/ui/dashboard/DashboardScreen.kt =====
+package com.kalidroid.ui.dashboard
+
+import android.content.Intent
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import com.kalidroid.KaliDroidApp
+import com.kalidroid.hardware.BluetoothController
+import com.kalidroid.hardware.CameraController
+import com.kalidroid.hardware.GpsController
+import com.kalidroid.hardware.WifiController
+import com.kalidroid.jni.NativeLib
+import com.kalidroid.model.Tool
+import com.kalidroid.terminal.TerminalActivity
+import com.kalidroid.ui.tools.ToolCatalog
+
+@Composable
+fun DashboardScreen(
+    notice: String,
+    requestedMode: String,
+    onOpenTools: () -> Unit,
+    onOpenSettings: () -> Unit,
+    onOpenTool: (Tool) -> Unit
+) {
+    val context = LocalContext.current
+    val app = KaliDroidApp.instance
+    val shortcuts = remember { ToolCatalog.items.take(4) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("仪表盘", style = MaterialTheme.typography.headlineMedium)
+        Text("状态 + 快捷工具", color = MaterialTheme.colorScheme.secondary)
+        if (notice.isNotBlank()) {
+            Text(notice, color = MaterialTheme.colorScheme.error)
+        }
+
+        Card(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("运行状态", style = MaterialTheme.typography.titleMedium)
+                Text("请求权限: ${requestedMode.ifBlank { "NORMAL" }}")
+                Text("当前执行器: ${app.permissionManager.currentMode()}")
+                Text("JNI: ${runCatching { NativeLib.version() }.getOrDefault("jni-unloaded")}")
+                Text("主机: ${runCatching { NativeLib.hostFingerprint() }.getOrDefault("unavailable")}")
+                Text(app.kaliContainer.status().message)
+                Text(WifiController().scan().message)
+                Text(BluetoothController().scanDevices().message)
+                Text(CameraController().captureEvidence().message)
+                Text(GpsController().read().message)
+            }
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                context.startActivity(Intent(context, TerminalActivity::class.java))
+            }) { Text("全屏终端") }
+            TextButton(onClick = onOpenTools) { Text("工具库") }
+            TextButton(onClick = onOpenSettings) { Text("设置") }
+        }
+
+        Text("快捷工具", style = MaterialTheme.typography.titleMedium)
+        shortcuts.forEach { tool ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(tool.name, style = MaterialTheme.typography.titleMedium)
+                    Text(tool.description, color = MaterialTheme.colorScheme.secondary)
+                    Button(onClick = { onOpenTool(tool) }) { Text("打开") }
+                }
+            }
+        }
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/ui/dashboard/DashboardScreen.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/ui/settings/SettingsScreen.kt =====
+package com.kalidroid.ui.settings
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.kalidroid.KaliDroidApp
+import com.kalidroid.bridge.NativeExecutorBridge
+import com.kalidroid.permission.ExecutorMode
+import com.kalidroid.utils.FileUtils
+import com.kalidroid.utils.RootUtils
+import com.kalidroid.utils.ShizukuUtils
+
+@Composable
+fun SettingsScreen(darkTheme: Boolean, onToggleTheme: () -> Unit) {
+    val app = KaliDroidApp.instance
+    val pm = app.permissionManager
+    val scope = rememberCoroutineScope()
+    val bridge = remember { NativeExecutorBridge(scope) }
+    var wsUrl by remember { mutableStateOf("ws://127.0.0.1:3001/ws") }
+    var message by remember { mutableStateOf("当前执行器: ${pm.currentMode()}") }
+
+    DisposableEffect(Unit) {
+        onDispose { bridge.disconnect() }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("设置", style = MaterialTheme.typography.headlineMedium)
+        Text("权限切换 / WebSocket 桥接 / 容器管理 / 主题", color = MaterialTheme.colorScheme.secondary)
+
+        Text("su=${RootUtils.hasSu()}  Shizuku=${ShizukuUtils.isRunning()}")
+        Text("原生桥接: ${if (bridge.connected) "在线" else "未连接"}")
+
+        OutlinedTextField(
+            value = wsUrl,
+            onValueChange = { wsUrl = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("Node.js WebSocket") }
+        )
+        Button(modifier = Modifier.fillMaxWidth(), onClick = {
+            bridge.connect(wsUrl)
+            message = "正在连接 Android 原生执行器: $wsUrl"
+        }) { Text("通道：WebSocket → 原生执行器") }
+
+        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+            bridge.disconnect()
+            message = "已断开原生执行器"
+        }) { Text("断开 WebSocket") }
+
+        Button(modifier = Modifier.fillMaxWidth(), onClick = {
+            pm.persist(ExecutorMode.NORMAL)
+            message = "已切换到 NormalExecutor"
+        }) { Text("权限：普通执行器") }
+
+        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+            message = pm.executorFor(ExecutorMode.ADB).exec("id").stderr
+        }) { Text("权限：ADB / Shizuku（锁定）") }
+
+        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+            message = pm.executorFor(ExecutorMode.ROOT).exec("id").stderr
+        }) { Text("权限：Root su -c（锁定）") }
+
+        Button(modifier = Modifier.fillMaxWidth(), onClick = {
+            message = app.kaliContainer.start().message
+        }) { Text("容器：start()") }
+
+        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+            message = app.kaliContainer.stop().message
+        }) { Text("容器：stop()") }
+
+        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+            message = app.kaliContainer.exec("uname").message
+        }) { Text("容器：exec()") }
+
+        Button(modifier = Modifier.fillMaxWidth(), onClick = onToggleTheme) {
+            Text(if (darkTheme) "主题：切换浅色" else "主题：切换深色")
+        }
+
+        OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
+            FileUtils.write(app, "settings.txt", "theme=${if (darkTheme) "dark" else "light"}")
+            message = "已写入 filesDir: ${FileUtils.list(app)}"
+        }) { Text("写入 /data/data 应用目录") }
+
+        Text(message, color = MaterialTheme.colorScheme.primary)
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/ui/settings/SettingsScreen.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/ui/theme/Theme.kt =====
+package com.kalidroid.ui.theme
+
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
+
+private val ForgeDark = darkColorScheme(
+    primary = Color(0xFF3DE0C5),
+    onPrimary = Color(0xFF052018),
+    secondary = Color(0xFF7EE0FF),
+    background = Color(0xFF07111B),
+    surface = Color(0xFF0C1A27),
+    onBackground = Color(0xFFDFF7F1),
+    onSurface = Color(0xFFDFF7F1),
+    error = Color(0xFFFF6B6B)
+)
+
+private val ForgeLight = lightColorScheme(
+    primary = Color(0xFF0F766E),
+    onPrimary = Color.White,
+    secondary = Color(0xFF0369A1),
+    background = Color(0xFFF4FAF8),
+    surface = Color.White,
+    onBackground = Color(0xFF0F172A),
+    onSurface = Color(0xFF0F172A)
+)
+
+@Composable
+fun KaliDroidTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    content: @Composable () -> Unit
+) {
+    MaterialTheme(
+        colorScheme = if (darkTheme) ForgeDark else ForgeLight,
+        content = content
+    )
+}
+===== END FILE: app/src/main/java/com/kalidroid/ui/theme/Theme.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/ui/tools/ToolCatalog.kt =====
+package com.kalidroid.ui.tools
+
+import com.kalidroid.model.Tool
+
+object ToolCatalog {
+    val items: List<Tool> = listOf(
+        Tool("系统信息", "主机", "读取内核与架构。命令模板：uname", "uname"),
+        Tool("当前用户", "主机", "显示当前用户。命令模板：whoami", "whoami"),
+        Tool("用户标识", "主机", "显示 uid/gid。命令模板：id", "id"),
+        Tool("主机名", "主机", "读取主机名。命令模板：hostname", "hostname"),
+        Tool("运行时长", "主机", "系统 uptime。命令模板：uptime", "uptime"),
+        Tool("当前目录", "文件", "打印工作目录。命令模板：pwd", "pwd"),
+        Tool("文件列表", "文件", "列出工作区。命令模板：ls", "ls"),
+        Tool("磁盘用量", "存储", "根分区只读容量。命令模板：df", "df"),
+        Tool("内存摘要", "主机", "内存占用。命令模板：free", "free"),
+        Tool("系统时间", "开发", "当前时间。命令模板：date", "date")
+    )
+
+    fun find(name: String): Tool? = items.find { it.name == name }
+    fun categories(): List<String> = listOf("全部") + items.map { it.category }.distinct()
+}
+===== END FILE: app/src/main/java/com/kalidroid/ui/tools/ToolCatalog.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/ui/tools/ToolDetailScreen.kt =====
+package com.kalidroid.ui.tools
+
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.dp
+import com.kalidroid.KaliDroidApp
+import com.kalidroid.model.Tool
+import kotlinx.coroutines.launch
+
+@Composable
+fun ToolDetailScreen(tool: Tool, onBack: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    var extra by remember { mutableStateOf("") }
+    var output by remember { mutableStateOf("尚未执行") }
+
+    Column(
+        modifier = Modifier.fillMaxSize().padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text(tool.name, style = MaterialTheme.typography.headlineMedium)
+        Text(tool.description, color = MaterialTheme.colorScheme.secondary)
+        Text("分类: ${tool.category}")
+        Text("命令模板: ${tool.command}")
+        OutlinedTextField(
+            value = extra,
+            onValueChange = { extra = it },
+            modifier = Modifier.fillMaxWidth(),
+            label = { Text("附加参数（不会绕过白名单）") }
+        )
+        Button(onClick = {
+            scope.launch {
+                val result = KaliDroidApp.instance.permissionManager.getExecutor().execAsync(tool.command)
+                output = listOfNotNull(
+                    if (extra.isNotBlank()) "附加参数已忽略: $extra" else null,
+                    result.stdout.ifBlank { result.stderr }
+                ).joinToString("\n")
+            }
+        }) { Text("用当前执行器运行") }
+        Text(output, fontFamily = FontFamily.Monospace)
+        Button(onClick = onBack) { Text("返回") }
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/ui/tools/ToolDetailScreen.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/ui/tools/ToolLibraryScreen.kt =====
+package com.kalidroid.ui.tools
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.Card
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ScrollableTabRow
+import androidx.compose.material3.Tab
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.kalidroid.model.Tool
+
+@Composable
+fun ToolLibraryScreen(onOpen: (Tool) -> Unit) {
+    val categories = remember { ToolCatalog.categories() }
+    var tab by remember { mutableIntStateOf(0) }
+    var query by remember { mutableStateOf("") }
+    val filtered = ToolCatalog.items.filter { tool ->
+        val catOk = tab == 0 || tool.category == categories[tab]
+        val q = query.trim()
+        val qOk = q.isEmpty() || tool.name.contains(q, true) || tool.description.contains(q, true) || tool.command.contains(q, true)
+        catOk && qOk
+    }
+
+    Column(
+        Modifier.fillMaxSize().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Text("工具库", style = MaterialTheme.typography.headlineMedium)
+        Text("分类 + 搜索", color = MaterialTheme.colorScheme.secondary)
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.fillMaxWidth(),
+            placeholder = { Text("搜索名称 / 说明 / 命令") },
+            singleLine = true
+        )
+        ScrollableTabRow(selectedTabIndex = tab) {
+            categories.forEachIndexed { i, c ->
+                Tab(selected = tab == i, onClick = { tab = i }, text = { Text(c) })
+            }
+        }
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(filtered, key = { it.name }) { tool ->
+                Card(Modifier.fillMaxWidth().clickable { onOpen(tool) }) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(tool.category, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                        Text(tool.name, style = MaterialTheme.typography.titleMedium)
+                        Text(tool.description, color = MaterialTheme.colorScheme.secondary)
+                        Text("command = ${tool.command}")
+                    }
+                }
+            }
+        }
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/ui/tools/ToolLibraryScreen.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/utils/FileUtils.kt =====
+package com.kalidroid.utils
+
+import android.content.Context
+import java.io.File
+
+object FileUtils {
+    fun appDir(context: Context): File = context.filesDir
+
+    fun read(context: Context, name: String): String {
+        val file = File(appDir(context), name)
+        return if (file.exists()) file.readText() else ""
+    }
+
+    fun write(context: Context, name: String, content: String) {
+        File(appDir(context), name).writeText(content)
+    }
+
+    fun list(context: Context): List<String> {
+        return appDir(context).list()?.toList().orEmpty()
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/utils/FileUtils.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/utils/RootUtils.kt =====
+package com.kalidroid.utils
+
+import java.io.File
+
+object RootUtils {
+    fun hasSu(): Boolean {
+        val paths = listOf("/system/bin/su", "/system/xbin/su", "/sbin/su", "/vendor/bin/su")
+        return paths.any { File(it).exists() }
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/utils/RootUtils.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/utils/ShizukuUtils.kt =====
+package com.kalidroid.utils
+
+object ShizukuUtils {
+    fun isRunning(): Boolean = false
+}
+===== END FILE: app/src/main/java/com/kalidroid/utils/ShizukuUtils.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/workflow/WorkflowEngine.kt =====
+package com.kalidroid.workflow
+
+import com.kalidroid.model.Workflow
+import com.kalidroid.permission.CommandExecutor
+import com.kalidroid.permission.ExecResult
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+data class NodeLog(
+    val nodeId: String,
+    val tool: String,
+    val ok: Boolean,
+    val output: String
+)
+
+class WorkflowEngine(
+    private val executor: CommandExecutor,
+    private val parser: WorkflowParser = WorkflowParser()
+) {
+    private val allowTools = setOf(
+        "system.info",
+        "files.list",
+        "hash.file",
+        "terminal.run",
+        "report.generate"
+    )
+
+    fun parse(json: String): Workflow = parser.parse(json)
+
+    suspend fun execute(workflow: Workflow): List<NodeLog> = withContext(Dispatchers.Default) {
+        val done = mutableSetOf<String>()
+        val logs = mutableListOf<NodeLog>()
+        val pending = workflow.nodes.toMutableList()
+        var guard = 0
+        while (pending.isNotEmpty() && guard < 32) {
+            guard += 1
+            val ready = pending.filter { node -> node.depends.all { it in done } }
+            if (ready.isEmpty()) {
+                logs += NodeLog("", "engine", false, "存在循环依赖或缺失依赖")
+                break
+            }
+            for (node in ready) {
+                logs += runNode(node)
+                done += node.id
+                pending.remove(node)
+            }
+        }
+        logs
+    }
+
+    private suspend fun runNode(node: WorkflowNode): NodeLog {
+        if (node.tool !in allowTools) {
+            return NodeLog(node.id, node.tool, false, "节点类型不在白名单: ${node.tool}")
+        }
+        val command = node.args["command"] ?: when (node.tool) {
+            "system.info" -> "uname"
+            "files.list" -> "ls"
+            "terminal.run" -> "date"
+            else -> "echo"
+        }
+        val result: ExecResult = executor.execAsync(command)
+        return NodeLog(node.id, node.tool, result.ok && !result.denied, result.stdout.ifBlank { result.stderr })
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/workflow/WorkflowEngine.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/workflow/WorkflowNode.kt =====
+package com.kalidroid.workflow
+
+data class WorkflowNode(
+    val id: String,
+    val tool: String,
+    val args: Map<String, String> = emptyMap(),
+    val depends: List<String> = emptyList(),
+    val label: String = tool
+)
+===== END FILE: app/src/main/java/com/kalidroid/workflow/WorkflowNode.kt =====
+
+===== FILE: app/src/main/java/com/kalidroid/workflow/WorkflowParser.kt =====
+package com.kalidroid.workflow
+
+import com.google.gson.Gson
+import com.google.gson.JsonObject
+import com.kalidroid.model.Workflow
+
+class WorkflowParser(
+    private val gson: Gson = Gson()
+) {
+    fun parse(json: String): Workflow {
+        val obj = gson.fromJson(json, JsonObject::class.java)
+        val nodes = obj.getAsJsonArray("nodes")?.map { el ->
+            val n = el.asJsonObject
+            val args = mutableMapOf<String, String>()
+            n.getAsJsonObject("args")?.entrySet()?.forEach { (k, v) ->
+                args[k] = v.asString
+            }
+            val depends = n.getAsJsonArray("depends")?.map { it.asString }.orEmpty()
+            WorkflowNode(
+                id = n.get("id")?.asString ?: "",
+                tool = n.get("tool")?.asString ?: "",
+                args = args,
+                depends = depends,
+                label = n.get("label")?.asString ?: n.get("tool")?.asString.orEmpty()
+            )
+        }.orEmpty()
+        return Workflow(
+            id = obj.get("id")?.asString ?: "wf-unknown",
+            name = obj.get("name")?.asString ?: "未命名",
+            nodes = nodes,
+            status = obj.get("status")?.asString ?: "idle",
+            description = obj.get("description")?.asString.orEmpty()
+        )
+    }
+}
+===== END FILE: app/src/main/java/com/kalidroid/workflow/WorkflowParser.kt =====
+
+===== FILE: app/src/main/res/values/strings.xml =====
+<resources>
+    <string name="app_name">KaliDroid Ops</string>
+</resources>
+===== END FILE: app/src/main/res/values/strings.xml =====
+
+===== FILE: app/src/main/res/values/themes.xml =====
+<resources>
+    <style name="Theme.KaliDroid" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#07111B</item>
+        <item name="android:navigationBarColor">#07111B</item>
+        <item name="android:windowBackground">#07111B</item>
+    </style>
+</resources>
+===== END FILE: app/src/main/res/values/themes.xml =====
+
+===== FILE: backend/data/reports.json =====
+[
+  {
+    "id": "rpt-1788795738476",
+    "title": "系统快照报告",
+    "createdAt": "2026-09-07T15:42:18.476Z",
+    "summary": "3290fef0-6942-4495-acf0-cb304133507a · 2 核 · 内存 98% · 网卡 2",
+    "sections": [
+      {
+        "name": "系统",
+        "data": {
+          "hostname": "3290fef0-6942-4495-acf0-cb304133507a",
+          "platform": "linux",
+          "arch": "x64",
+          "release": "6.6.116",
+          "type": "Linux",
+          "uptimeSec": 1469,
+          "user": "root",
+          "cwd": "/workspace/backend",
+          "node": "v22.22.0",
+          "cpuModel": "Intel(R) Xeon(R) Processor",
+          "cpuCount": 2,
+          "loadavg": [
+            0.01,
+            0.04,
+            0.04
+          ],
+          "memory": {
+            "total": 8352858112,
+            "free": 197701632,
+            "used": 8155156480,
+            "totalLabel": "7.8 GB",
+            "freeLabel": "188.5 MB",
+            "usedLabel": "7.6 GB",
+            "usedPercent": 98
+          }
+        }
+      },
+      {
+        "name": "硬件",
+        "data": {
+          "cpu": {
+            "model": "Intel(R) Xeon(R) Processor",
+            "cores": 2,
+            "speedMHz": 0
+          },
+          "sensors": [
+            {
+              "id": "cpu",
+              "name": "CPU 负载",
+              "value": "0.01",
+              "unit": "1m"
+            },
+            {
+              "id": "mem",
+              "name": "内存占用",
+              "value": "98%",
+              "unit": ""
+            },
+            {
+              "id": "temp",
+              "name": "热区温度",
+              "value": "N/A",
+              "unit": "C"
+            }
+          ]
+        }
+      },
+      {
+        "name": "网络",
+        "data": {
+          "hostname": "3290fef0-6942-4495-acf0-cb304133507a",
+          "interfaces": [
+            {
+              "name": "lo",
+              "family": "IPv4",
+              "address": "127.0.0.1",
+              "netmask": "255.0.0.0",
+              "mac": "00:00:00:00:00:00",
+              "internal": true,
+              "cidr": "127.0.0.1/8"
+            },
+            {
+              "name": "lo",
+              "family": "IPv6",
+              "address": "::1",
+              "netmask": "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+              "mac": "00:00:00:00:00:00",
+              "internal": true,
+              "cidr": "::1/128"
+            },
+            {
+              "name": "eth0",
+              "family": "IPv4",
+              "address": "169.254.169.252",
+              "netmask": "255.255.255.252",
+              "mac": "06:e7:6f:d0:86:5d",
+              "internal": false,
+              "cidr": "169.254.169.252/30"
+            },
+            {
+              "name": "eth0",
+              "family": "IPv4",
+              "address": "192.168.19.205",
+              "netmask": "255.255.240.0",
+              "mac": "06:e7:6f:d0:86:5d",
+              "internal": false,
+              "cidr": "192.168.19.205/20"
+            },
+            {
+              "name": "eth0",
+              "family": "IPv6",
+              "address": "fe80::4e7:6fff:fed0:865d",
+              "netmask": "ffff:ffff:ffff:ffff::",
+              "mac": "06:e7:6f:d0:86:5d",
+              "internal": false,
+              "cidr": "fe80::4e7:6fff:fed0:865d/64"
+            }
+          ]
+        }
+      },
+      {
+        "name": "权限",
+        "data": {
+          "current": "user",
+          "executors": [
+            {
+              "id": "user",
+              "name": "普通执行器",
+              "enabled": true,
+              "desc": "以当前用户身份运行白名单命令。"
+            },
+            {
+              "id": "adb",
+              "name": "ADB 执行器",
+              "enabled": false,
+              "desc": "已关闭。本工作台不连接设备调试桥。"
+            },
+            {
+              "id": "root",
+              "name": "Root 执行器",
+              "enabled": false,
+              "desc": "永久关闭。禁止提权与内核模块加载。"
+            }
+          ],
+          "denied": [
+            "root",
+            "sudo",
+            "chroot",
+            "insmod",
+            "rmmod",
+            "mount",
+            "iptables",
+            "kali-tools"
+          ],
+          "policy": "最小权限：仅用户态只读采集与白名单命令。"
+        }
+      }
+    ]
+  }
+]
+===== END FILE: backend/data/reports.json =====
+
+===== FILE: backend/data/settings.json =====
+{
+  "executor": "NORMAL",
+  "requestedMode": "NORMAL",
+  "theme": "forge",
+  "productName": "ForgeOS 运维工作台",
+  "channel": "shell",
+  "workspaceRoot": "/workspace",
+  "allowUserExecutor": true,
+  "allowAdbExecutor": false,
+  "allowRootExecutor": false,
+  "kernelModulesEnabled": false,
+  "kaliToolsEnabled": false,
+  "logRetentionDays": 14
+}
+===== END FILE: backend/data/settings.json =====
+
+===== FILE: backend/data/workflows.json =====
+[
+  {
+    "id": "wf-health-check",
+    "name": "系统健康巡检",
+    "description": "采集主机、内存、磁盘与网络摘要，生成运维快照。",
+    "nodes": [
+      {
+        "id": "n1",
+        "type": "system.info",
+        "label": "读取系统信息"
+      },
+      {
+        "id": "n2",
+        "type": "hardware.snapshot",
+        "label": "采集硬件状态"
+      },
+      {
+        "id": "n3",
+        "type": "network.summary",
+        "label": "汇总网络接口"
+      },
+      {
+        "id": "n4",
+        "type": "report.generate",
+        "label": "写入巡检报告"
+      }
+    ]
+  },
+  {
+    "id": "wf-workspace-audit",
+    "name": "工作区文件审计",
+    "description": "列出工作区文件并计算 README 哈希，输出审计记录。",
+    "nodes": [
+      {
+        "id": "n1",
+        "type": "files.list",
+        "label": "列出工作区"
+      },
+      {
+        "id": "n2",
+        "type": "hash.file",
+        "label": "计算 README 哈希",
+        "params": {
+          "path": "README.md"
+        }
+      },
+      {
+        "id": "n3",
+        "type": "json.format",
+        "label": "格式化结果"
+      }
+    ]
+  }
+]
+===== END FILE: backend/data/workflows.json =====
+
+===== FILE: backend/package.json =====
+{
+  "name": "kalidroid-api",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "ws": "^8.18.0"
+  }
+}
+===== END FILE: backend/package.json =====
+
+===== FILE: backend/server.js =====
+import cors from 'cors'
+import express from 'express'
+import fs from 'node:fs'
+import http from 'node:http'
+import os from 'os'
+import path from 'node:path'
+import { execFile } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
+import { WebSocketServer } from 'ws'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const DATA_DIR = path.join(__dirname, 'data')
+const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json')
+const PORT = Number(process.env.PORT || 3001)
+
+fs.mkdirSync(DATA_DIR, { recursive: true })
+
+const TOOLS = [
+  { name: '系统信息', category: '主机', description: '读取内核与架构。命令模板：uname', command: 'uname' },
+  { name: '当前用户', category: '主机', description: '显示当前用户。命令模板：whoami', command: 'whoami' },
+  { name: '用户标识', category: '主机', description: '显示 uid/gid。命令模板：id', command: 'id' },
+  { name: '主机名', category: '主机', description: '读取主机名。命令模板：hostname', command: 'hostname' },
+  { name: '运行时长', category: '主机', description: '系统 uptime。命令模板：uptime', command: 'uptime' },
+  { name: '当前目录', category: '文件', description: '打印工作目录。命令模板：pwd', command: 'pwd' },
+  { name: '文件列表', category: '文件', description: '列出工作区。命令模板：ls', command: 'ls' },
+  { name: '磁盘用量', category: '存储', description: '根分区只读容量。命令模板：df', command: 'df' },
+  { name: '内存摘要', category: '主机', description: '内存占用。命令模板：free', command: 'free' },
+  { name: '系统时间', category: '开发', description: '当前时间。命令模板：date', command: 'date' }
+]
+
+const ALLOWED = {
+  date: ['date'],
+  uname: ['uname', '-a'],
+  hostname: ['hostname'],
+  whoami: ['whoami'],
+  id: ['id'],
+  uptime: ['uptime'],
+  pwd: ['pwd'],
+  df: ['df', '-h', '/'],
+  free: ['free', '-h'],
+  ls: ['ls', '-lah', path.resolve(__dirname, '..')]
+}
+
+const DEFAULT_SETTINGS = {
+  executor: 'NORMAL',
+  requestedMode: 'NORMAL',
+  theme: 'dark',
+  productName: 'KaliDroid Ops',
+  channel: 'shell'
+}
+
+function readSettings() {
+  try {
+    return { ...DEFAULT_SETTINGS, ...JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) }
+  } catch {
+    return { ...DEFAULT_SETTINGS }
+  }
+}
+
+function writeSettings(value) {
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(value, null, 2))
+}
+
+if (!fs.existsSync(SETTINGS_FILE)) writeSettings(DEFAULT_SETTINGS)
+
+function detect() {
+  return { normal: true, adb: false, root: false, hasSu: false, shizuku: false }
+}
+
+function choose(mode) {
+  const requested = String(mode || 'NORMAL').toUpperCase()
+  const settings = readSettings()
+  if (requested === 'ADB') {
+    settings.executor = 'NORMAL'
+    settings.requestedMode = 'ADB'
+    writeSettings(settings)
+    return {
+      requestedMode: 'ADB',
+      executor: 'NORMAL',
+      notice: 'AdbExecutor 已锁定，Shizuku 通道未启用。已回退 NormalExecutor。'
+    }
+  }
+  if (requested === 'ROOT') {
+    settings.executor = 'NORMAL'
+    settings.requestedMode = 'ROOT'
+    writeSettings(settings)
+    return {
+      requestedMode: 'ROOT',
+      executor: 'NORMAL',
+      notice: 'RootExecutor 已锁定，拒绝 su -c。已回退 NormalExecutor。'
+    }
+  }
+  settings.executor = 'NORMAL'
+  settings.requestedMode = 'NORMAL'
+  writeSettings(settings)
+  return { requestedMode: 'NORMAL', executor: 'NORMAL', notice: '' }
+}
+
+function runAllowed(command) {
+  const key = String(command || '').trim().split(/\s+/)[0]
+  const spec = ALLOWED[key]
+  if (!spec) {
+    return Promise.resolve({
+      ok: false,
+      command: key,
+      stdout: '',
+      stderr: `命令不在白名单: ${key}。允许: ${Object.keys(ALLOWED).join(' ')}`,
+      denied: true
+    })
+  }
+  return new Promise((resolve) => {
+    execFile(spec[0], spec.slice(1), { timeout: 4000 }, (err, stdout, stderr) => {
+      resolve({
+        ok: !err,
+        command: key,
+        stdout: String(stdout || '').slice(0, 8000),
+        stderr: String(stderr || (err ? err.message : '')).slice(0, 2000),
+        denied: false
+      })
+    })
+  })
+}
+
+function kali(action) {
+  if (action === 'start') return { running: false, message: 'Kali 容器已禁用。不启动 chroot，不加载 Kali 工具库。' }
+  if (action === 'stop') return { running: false, message: '容器未运行。' }
+  if (action === 'status') return { running: false, message: 'rootfs 未部署; /proc /dev /sys 均未由本应用挂载' }
+  return { running: false, message: '拒绝在 Kali 容器内执行命令。' }
+}
+
+const uiClients = new Set()
+const androidClients = new Set()
+const pendingNative = new Map()
+
+function sendJson(ws, payload) {
+  if (ws.readyState === 1) ws.send(JSON.stringify(payload))
+}
+
+function broadcastUi(payload) {
+  for (const ws of uiClients) sendJson(ws, payload)
+}
+
+function androidOnline() {
+  return androidClients.size > 0
+}
+
+function hubStatus() {
+  const settings = readSettings()
+  return {
+    websocket: true,
+    androidOnline: androidOnline(),
+    androidCount: androidClients.size,
+    uiCount: uiClients.size,
+    channel: settings.channel,
+    executor: settings.executor,
+    requestedMode: settings.requestedMode
+  }
+}
+
+async function runShell(command) {
+  const result = await runAllowed(command)
+  return {
+    ...result,
+    via: 'Android Shell / ADB',
+    channel: 'shell',
+    executor: 'SHELL'
+  }
+}
+
+function runNativeLocked(command, requestedMode) {
+  const mode = String(requestedMode || 'NORMAL').toUpperCase()
+  if (mode === 'ROOT') {
+    return {
+      ok: false,
+      command,
+      stdout: '',
+      stderr: 'RootExecutor 已锁定，拒绝 su -c。',
+      denied: true,
+      via: 'Android 原生执行器',
+      channel: 'native',
+      executor: 'ROOT'
+    }
+  }
+  if (mode === 'ADB') {
+    return {
+      ok: false,
+      command,
+      stdout: '',
+      stderr: 'AdbExecutor 已锁定，Shizuku 通道未启用。',
+      denied: true,
+      via: 'Android 原生执行器',
+      channel: 'native',
+      executor: 'ADB'
+    }
+  }
+  return null
+}
+
+function forwardNative(command) {
+  const locked = runNativeLocked(command)
+  if (locked) return Promise.resolve(locked)
+  if (!androidOnline()) {
+    return Promise.resolve({
+      ok: false,
+      command,
+      stdout: '',
+      stderr: 'Android 原生执行器未连接。请在 App 设置里打开 WebSocket 桥接。',
+      denied: true,
+      via: 'Android 原生执行器',
+      channel: 'native',
+      executor: 'NORMAL'
+    })
+  }
+  const id = `n-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  const payload = {
+    type: 'exec',
+    id,
+    command,
+    mode: 'NORMAL'
+  }
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      pendingNative.delete(id)
+      resolve({
+        ok: false,
+        command,
+        stdout: '',
+        stderr: 'Android 原生执行器超时。',
+        denied: true,
+        via: 'Android 原生执行器',
+        channel: 'native',
+        executor: 'NORMAL'
+      })
+    }, 8000)
+    pendingNative.set(id, { resolve, timer, command })
+    for (const ws of androidClients) sendJson(ws, payload)
+  })
+}
+
+async function execute(command, channel) {
+  const ch = channel === 'native' ? 'native' : 'shell'
+  if (ch === 'native') return forwardNative(command)
+  return runShell(command)
+}
+
+const app = express()
+app.use(cors())
+app.use(express.json({ limit: '256kb' }))
+
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, product: 'KaliDroid', mode: 'ops-console', ws: '/ws' })
+})
+
+app.get('/api/architecture', (_req, res) => {
+  res.json({
+    frontend: 'Vite + React',
+    transport: 'WebSocket',
+    backend: 'Node.js',
+    paths: [
+      { id: 'shell', from: '后端服务 Node.js', via: '调用系统命令', to: 'Android Shell / ADB' },
+      { id: 'native', from: '后端服务 Node.js', via: 'WebSocket', to: 'Android 原生执行器 → Root / ADB / Normal' }
+    ],
+    hub: hubStatus()
+  })
+})
+
+app.get('/api/permission/detect', (_req, res) => res.json(detect()))
+
+app.post('/api/permission/choose', (req, res) => {
+  const result = choose(req.body?.mode)
+  broadcastUi({ type: 'status', ...hubStatus() })
+  res.json(result)
+})
+
+app.get('/api/status', (_req, res) => {
+  const settings = readSettings()
+  const hub = hubStatus()
+  res.json({
+    executor: settings.executor,
+    requestedMode: settings.requestedMode,
+    channel: settings.channel,
+    jni: 'kalidroid-jni-1.0.0-ops',
+    host: `${os.type()} ${os.release()} ${os.arch()}`,
+    container: kali('status').message,
+    websocket: true,
+    androidOnline: hub.androidOnline,
+    hardware: [
+      'Wi-Fi 扫描已关闭。',
+      '蓝牙扫描已关闭。',
+      '摄像头取证已关闭。',
+      'GPS 采集已关闭。'
+    ]
+  })
+})
+
+app.get('/api/hardware', (_req, res) => {
+  res.json({
+    wifi: 'Wi-Fi 扫描已关闭。',
+    bluetooth: '蓝牙扫描已关闭。',
+    camera: '摄像头取证已关闭。',
+    gps: 'GPS 采集已关闭。'
+  })
+})
+
+app.get('/api/tools', (_req, res) => res.json({ items: TOOLS }))
+
+app.get('/api/tools/:name', (req, res) => {
+  const tool = TOOLS.find((t) => t.name === decodeURIComponent(req.params.name))
+  if (!tool) return res.status(404).json({ error: '工具不存在' })
+  res.json(tool)
+})
+
+app.post('/api/tools/:name/run', async (req, res) => {
+  const tool = TOOLS.find((t) => t.name === decodeURIComponent(req.params.name))
+  if (!tool) return res.status(404).json({ error: '工具不存在' })
+  const channel = req.body?.channel || readSettings().channel
+  res.json(await execute(tool.command, channel))
+})
+
+app.post('/api/terminal', async (req, res) => {
+  const channel = req.body?.channel || readSettings().channel
+  const result = await execute(req.body?.command, channel)
+  res.status(result.ok ? 200 : 400).json(result)
+})
+
+app.post('/api/kali/:action', (req, res) => {
+  res.json(kali(req.params.action))
+})
+
+app.get('/api/settings', (_req, res) => res.json({ ...readSettings(), androidOnline: androidOnline() }))
+
+app.put('/api/settings', (req, res) => {
+  const current = readSettings()
+  const channel = req.body?.channel === 'native' ? 'native' : 'shell'
+  const next = {
+    ...current,
+    theme: req.body?.theme === 'light' ? 'light' : 'dark',
+    channel,
+    executor: 'NORMAL'
+  }
+  writeSettings(next)
+  broadcastUi({ type: 'status', ...hubStatus() })
+  res.json({ ...next, androidOnline: androidOnline() })
+})
+
+const server = http.createServer(app)
+const wss = new WebSocketServer({ server, path: '/ws' })
+
+wss.on('connection', (ws) => {
+  ws.role = 'unknown'
+  sendJson(ws, { type: 'ready', ...hubStatus() })
+
+  ws.on('message', async (raw) => {
+    let msg = null
+    try {
+      msg = JSON.parse(String(raw))
+    } catch {
+      sendJson(ws, { type: 'error', error: 'invalid json' })
+      return
+    }
+
+    if (msg.type === 'hello') {
+      ws.role = msg.role === 'android' ? 'android' : 'ui'
+      if (ws.role === 'android') androidClients.add(ws)
+      else uiClients.add(ws)
+      const status = { type: 'status', ...hubStatus() }
+      sendJson(ws, status)
+      broadcastUi(status)
+      return
+    }
+
+    if (msg.type === 'result' && ws.role === 'android') {
+      const pending = pendingNative.get(msg.id)
+      if (!pending) return
+      clearTimeout(pending.timer)
+      pendingNative.delete(msg.id)
+      pending.resolve({
+        ok: Boolean(msg.ok),
+        command: pending.command,
+        stdout: String(msg.stdout || ''),
+        stderr: String(msg.stderr || ''),
+        denied: Boolean(msg.denied),
+        via: 'Android 原生执行器',
+        channel: 'native',
+        executor: msg.executor || 'NORMAL'
+      })
+      return
+    }
+
+    if (msg.type === 'exec') {
+      const channel = msg.channel || readSettings().channel
+      const result = await execute(msg.command, channel)
+      sendJson(ws, { type: 'result', id: msg.id, ...result })
+    }
+  })
+
+  ws.on('close', () => {
+    uiClients.delete(ws)
+    androidClients.delete(ws)
+    broadcastUi({ type: 'status', ...hubStatus() })
+  })
+})
+
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`KaliDroid API+WS listening on ${PORT}`)
+})
+===== END FILE: backend/server.js =====
+
+===== FILE: build.gradle.kts =====
+plugins {
+    id("com.android.application") version "8.7.2" apply false
+    id("org.jetbrains.kotlin.android") version "2.0.21" apply false
+    id("org.jetbrains.kotlin.plugin.compose") version "2.0.21" apply false
+}
+===== END FILE: build.gradle.kts =====
+
+===== FILE: frontend/index.html =====
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>KaliDroid</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
+===== END FILE: frontend/index.html =====
+
+===== FILE: frontend/package.json =====
+{
+  "name": "kalidroid-console",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 5173",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 5173"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.0.7"
+  }
+}
+===== END FILE: frontend/package.json =====
+
+===== FILE: frontend/src/App.jsx =====
+import { Navigate, Route, Routes } from 'react-router-dom'
+import PermissionChooser from './pages/PermissionChooser.jsx'
+import Shell from './pages/Shell.jsx'
+import Dashboard from './pages/Dashboard.jsx'
+import Tools from './pages/Tools.jsx'
+import ToolDetail from './pages/ToolDetail.jsx'
+import Terminal from './pages/Terminal.jsx'
+import Settings from './pages/Settings.jsx'
+
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<PermissionChooser />} />
+      <Route path="/app" element={<Shell />}>
+        <Route index element={<Navigate to="dashboard" replace />} />
+        <Route path="dashboard" element={<Dashboard />} />
+        <Route path="tools" element={<Tools />} />
+        <Route path="tools/:name" element={<ToolDetail />} />
+        <Route path="terminal" element={<Terminal />} />
+        <Route path="settings" element={<Settings />} />
+      </Route>
+    </Routes>
+  )
+}
+===== END FILE: frontend/src/App.jsx =====
+
+===== FILE: frontend/src/App.vue =====
+<template>
+  <router-view />
+</template>
+===== END FILE: frontend/src/App.vue =====
+
+===== FILE: frontend/src/api.js =====
+async function request(path, options = {}) {
+  const res = await fetch(path, {
+    headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+    ...options
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) {
+    const error = new Error(data.error || data.stderr || `请求失败 ${res.status}`)
+    error.payload = data
+    throw error
+  }
+  return data
+}
+
+export const api = {
+  health: () => request('/api/health'),
+  architecture: () => request('/api/architecture'),
+  detect: () => request('/api/permission/detect'),
+  choose: (mode) => request('/api/permission/choose', { method: 'POST', body: JSON.stringify({ mode }) }),
+  status: () => request('/api/status'),
+  tools: () => request('/api/tools'),
+  tool: (name) => request(`/api/tools/${encodeURIComponent(name)}`),
+  runTool: (name, channel) => request(`/api/tools/${encodeURIComponent(name)}/run`, { method: 'POST', body: JSON.stringify({ channel }) }),
+  terminal: (command, channel) => request('/api/terminal', { method: 'POST', body: JSON.stringify({ command, channel }) }),
+  container: (action) => request(`/api/kali/${action}`, { method: 'POST' }),
+  settings: () => request('/api/settings'),
+  saveSettings: (payload) => request('/api/settings', { method: 'PUT', body: JSON.stringify(payload) })
+}
+
+export function wsUrl() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${proto}//${location.host}/ws`
+}
+===== END FILE: frontend/src/api.js =====
+
+===== FILE: frontend/src/main.js =====
+import { createApp } from 'vue'
+import App from './App.vue'
+import router from './router'
+import './styles.css'
+
+createApp(App).use(router).mount('#app')
+===== END FILE: frontend/src/main.js =====
+
+===== FILE: frontend/src/main.jsx =====
+import React from 'react'
+import { createRoot } from 'react-dom/client'
+import { BrowserRouter } from 'react-router-dom'
+import App from './App.jsx'
+import './styles.css'
+
+createRoot(document.getElementById('app')).render(
+  <BrowserRouter>
+    <App />
+  </BrowserRouter>
+)
+===== END FILE: frontend/src/main.jsx =====
+
+===== FILE: frontend/src/pages/Dashboard.jsx =====
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { api } from '../api'
+
+export default function Dashboard() {
+  const navigate = useNavigate()
+  const [status, setStatus] = useState({})
+  const [arch, setArch] = useState({ paths: [] })
+  const [shortcuts, setShortcuts] = useState([])
+  const notice = sessionStorage.getItem('kd-notice') || ''
+  const requestedMode = sessionStorage.getItem('kd-mode') || 'NORMAL'
+
+  useEffect(() => {
+    api.status().then(setStatus)
+    api.architecture().then(setArch)
+    api.tools().then((data) => setShortcuts((data.items || []).slice(0, 4)))
+  }, [])
+
+  return (
+    <div className="page stack">
+      <div className="brand">VITE + REACT</div>
+      <h1>仪表盘</h1>
+      <p className="muted">前端 UI 经 WebSocket 到达 Node.js 后端</p>
+      {notice ? <p className="danger">{notice}</p> : null}
+      <div className="card">
+        <h3>运行状态</h3>
+        <p>请求权限: {requestedMode}</p>
+        <p>当前执行器: {status.executor}</p>
+        <p>通道: {status.channel === 'native' ? 'Android 原生执行器' : 'Android Shell / ADB'}</p>
+        <p>WebSocket: {status.websocket ? '已连接后端' : '未启用'}</p>
+        <p>原生执行器: {status.androidOnline ? '在线' : '未连接'}</p>
+        <p>JNI: {status.jni}</p>
+        <p>主机: {status.host}</p>
+        <p>{status.container}</p>
+        {(status.hardware || []).map((line) => <p key={line}>{line}</p>)}
+      </div>
+      <div className="card">
+        <h3>执行路径</h3>
+        {(arch.paths || []).map((p) => (
+          <p key={p.id}>{p.from} → {p.via} → {p.to}</p>
+        ))}
+      </div>
+      <div className="row">
+        <button className="btn small" onClick={() => navigate('/app/terminal')}>全屏终端</button>
+        <button className="btn-outline small" onClick={() => navigate('/app/tools')}>工具库</button>
+        <button className="btn-outline small" onClick={() => navigate('/app/settings')}>设置</button>
+      </div>
+      <h3>快捷工具</h3>
+      {shortcuts.map((tool) => (
+        <div className="card" key={tool.name}>
+          <h3>{tool.name}</h3>
+          <p className="muted">{tool.description}</p>
+          <button className="btn small" onClick={() => navigate(`/app/tools/${encodeURIComponent(tool.name)}`)}>打开</button>
+        </div>
+      ))}
+    </div>
+  )
+}
+===== END FILE: frontend/src/pages/Dashboard.jsx =====
+
+===== FILE: frontend/src/pages/PermissionChooser.jsx =====
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { api } from '../api'
+
+export default function PermissionChooser() {
+  const navigate = useNavigate()
+  const [detect, setDetect] = useState({ normal: true, adb: false, root: false, hasSu: false, shizuku: false })
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    api.detect().then(setDetect).catch((e) => setError(e.message))
+  }, [])
+
+  async function choose(mode) {
+    setError('')
+    try {
+      const result = await api.choose(mode)
+      sessionStorage.setItem('kd-mode', result.requestedMode)
+      sessionStorage.setItem('kd-notice', result.notice || '')
+      navigate('/app/dashboard')
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
+  return (
+    <div className="phone">
+      <div className="frame">
+        <div className="page stack">
+          <div className="brand">KALIDROID</div>
+          <h1>启动权限选择</h1>
+          <p className="muted">Vite + React · WebSocket · Node.js</p>
+          <div className="card">
+            <h3>PermissionManager.detect()</h3>
+            <p>normal={String(detect.normal)}</p>
+            <p>adb={String(detect.adb)}</p>
+            <p>root={String(detect.root)}</p>
+            <p className="muted">su={String(detect.hasSu)} · Shizuku={String(detect.shizuku)}</p>
+          </div>
+          <button className="btn" onClick={() => choose('NORMAL')}>NormalExecutor · Runtime.exec()</button>
+          <button className="btn-outline" onClick={() => choose('ADB')}>AdbExecutor · Shizuku（锁定）</button>
+          <button className="btn-outline" onClick={() => choose('ROOT')}>RootExecutor · su -c（锁定）</button>
+          {error ? <p className="danger">{error}</p> : null}
+        </div>
+      </div>
+    </div>
+  )
+}
+===== END FILE: frontend/src/pages/PermissionChooser.jsx =====
+
+===== FILE: frontend/src/pages/Settings.jsx =====
+import { useEffect, useState } from 'react'
+import { api } from '../api'
+
+export default function Settings() {
+  const [settings, setSettings] = useState({ executor: 'NORMAL', channel: 'shell' })
+  const [dark, setDark] = useState(true)
+  const [msg, setMsg] = useState('')
+
+  useEffect(() => {
+    api.settings().then(setSettings)
+  }, [])
+
+  async function choose(mode) {
+    const r = await api.choose(mode)
+    setMsg(r.notice || `已选择 ${r.executor}`)
+    setSettings((s) => ({ ...s, executor: r.executor, requestedMode: r.requestedMode }))
+  }
+
+  async function setChannel(channel) {
+    const r = await api.saveSettings({ channel, theme: dark ? 'dark' : 'light' })
+    setSettings(r)
+    setMsg(channel === 'native' ? '通道：Android 原生执行器（WebSocket）' : '通道：Android Shell / ADB（系统命令）')
+  }
+
+  async function container(action) {
+    const r = await api.container(action)
+    setMsg(r.message)
+  }
+
+  const danger = msg.startsWith('拒绝') || msg.includes('锁定') || msg.includes('禁用') || msg.includes('未连接')
+
+  return (
+    <div className="page stack">
+      <h1>设置</h1>
+      <p className="muted">权限切换 / 执行通道 / 容器管理 / 主题</p>
+      <div className="card">
+        <p>当前执行器: {settings.executor}</p>
+        <p>通道: {settings.channel === 'native' ? 'Android 原生执行器' : 'Android Shell / ADB'}</p>
+        <p>原生桥接: {settings.androidOnline ? '在线' : '未连接'}</p>
+        <p>主题: {dark ? '深色' : '浅色'}</p>
+      </div>
+      <button className="btn" onClick={() => setChannel('shell')}>通道：调用系统命令 → Android Shell / ADB</button>
+      <button className="btn-outline" onClick={() => setChannel('native')}>通道：WebSocket → Android 原生执行器</button>
+      <button className="btn" onClick={() => choose('NORMAL')}>权限：普通执行器</button>
+      <button className="btn-outline" onClick={() => choose('ADB')}>权限：ADB / Shizuku（锁定）</button>
+      <button className="btn-outline" onClick={() => choose('ROOT')}>权限：Root su -c（锁定）</button>
+      <button className="btn" onClick={() => container('start')}>容器：start()</button>
+      <button className="btn-outline" onClick={() => container('stop')}>容器：stop()</button>
+      <button className="btn-outline" onClick={() => container('exec')}>容器：exec()</button>
+      <button className="btn" onClick={() => setDark((v) => !v)}>主题：{dark ? '切换浅色' : '切换深色'}</button>
+      <p className={danger ? 'danger' : 'ok'}>{msg}</p>
+    </div>
+  )
+}
+===== END FILE: frontend/src/pages/Settings.jsx =====
+
+===== FILE: frontend/src/pages/Shell.jsx =====
+import { NavLink, Outlet } from 'react-router-dom'
+
+export default function Shell() {
+  return (
+    <div className="phone">
+      <div className="frame">
+        <Outlet />
+        <nav className="nav">
+          <NavLink to="/app/dashboard" end>仪表盘</NavLink>
+          <NavLink to="/app/tools">工具库</NavLink>
+          <NavLink to="/app/terminal">终端</NavLink>
+          <NavLink to="/app/settings">设置</NavLink>
+        </nav>
+      </div>
+    </div>
+  )
+}
+===== END FILE: frontend/src/pages/Shell.jsx =====
+
+===== FILE: frontend/src/pages/Terminal.jsx =====
+import { useEffect, useRef, useState } from 'react'
+import { api, wsUrl } from '../api'
+
+const COMMANDS = ['date', 'uname', 'hostname', 'whoami', 'id', 'uptime', 'pwd', 'df', 'free', 'ls']
+
+export default function Terminal() {
+  const [input, setInput] = useState('uname')
+  const [output, setOutput] = useState('KaliDroid WS terminal ready.\n路径1: Android Shell / ADB\n路径2: Android 原生执行器 → Root / ADB / Normal')
+  const [channel, setChannel] = useState('shell')
+  const wsRef = useRef(null)
+
+  useEffect(() => {
+    api.settings().then((s) => setChannel(s.channel || 'shell'))
+    const socket = new WebSocket(wsUrl())
+    wsRef.current = socket
+    socket.onopen = () => socket.send(JSON.stringify({ type: 'hello', role: 'ui' }))
+    socket.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data)
+      if (msg.type === 'result') {
+        const via = msg.via ? `[${msg.via} / ${msg.executor}]` : ''
+        setOutput((prev) => `${prev}\n$ ${msg.command} ${via}\n${msg.stdout || msg.stderr || ''}`)
+      }
+    }
+    return () => socket.close()
+  }, [])
+
+  function run(e) {
+    e.preventDefault()
+    const socket = wsRef.current
+    if (!socket || socket.readyState !== 1) {
+      setOutput((prev) => `${prev}\nWebSocket 未连接`)
+      return
+    }
+    socket.send(JSON.stringify({ type: 'exec', id: `t-${Date.now()}`, command: input, channel }))
+  }
+
+  return (
+    <div className="page stack">
+      <h1>全屏终端</h1>
+      <p className="muted">UI → WebSocket → Node.js → {channel === 'native' ? 'Android 原生执行器' : '系统命令 / Android Shell'}</p>
+      <div className="tabs">
+        {COMMANDS.map((c) => (
+          <button key={c} className="chip" onClick={() => setInput(c)}>{c}</button>
+        ))}
+      </div>
+      <form className="row" onSubmit={run}>
+        <input className="input" value={input} onChange={(e) => setInput(e.target.value)} />
+        <button className="btn small" type="submit">运行</button>
+      </form>
+      <pre className="term">{output}</pre>
+    </div>
+  )
+}
+===== END FILE: frontend/src/pages/Terminal.jsx =====
+
+===== FILE: frontend/src/pages/ToolDetail.jsx =====
+import { useEffect, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { api, wsUrl } from '../api'
+
+export default function ToolDetail() {
+  const { name } = useParams()
+  const navigate = useNavigate()
+  const [tool, setTool] = useState({})
+  const [extra, setExtra] = useState('')
+  const [output, setOutput] = useState('尚未执行')
+  const [channel, setChannel] = useState('shell')
+
+  useEffect(() => {
+    api.tool(name).then(setTool)
+    api.settings().then((s) => setChannel(s.channel || 'shell'))
+  }, [name])
+
+  function run() {
+    const socket = new WebSocket(wsUrl())
+    const id = `ui-${Date.now()}`
+    socket.onopen = () => {
+      socket.send(JSON.stringify({ type: 'hello', role: 'ui' }))
+      socket.send(JSON.stringify({ type: 'exec', id, command: tool.command, channel }))
+    }
+    socket.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data)
+      if (msg.type !== 'result' || msg.id !== id) return
+      const ignored = extra ? `附加参数已忽略: ${extra}\n` : ''
+      const via = msg.via ? `[${msg.via} / ${msg.executor}]\n` : ''
+      setOutput(ignored + via + (msg.stdout || msg.stderr || '(empty)'))
+      socket.close()
+    }
+    socket.onerror = () => setOutput('WebSocket 连接失败')
+  }
+
+  return (
+    <div className="page stack">
+      <p className="brand">TOOLDETAILSCREEN</p>
+      <h1>{tool.name || '工具详情'}</h1>
+      <p className="muted">{tool.description}</p>
+      <div className="card">
+        <p>分类: {tool.category}</p>
+        <p>命令模板: {tool.command}</p>
+        <p>通道: {channel === 'native' ? 'Android 原生执行器' : 'Android Shell / ADB'}</p>
+      </div>
+      <input className="input" value={extra} onChange={(e) => setExtra(e.target.value)} placeholder="附加参数（不会绕过白名单）" />
+      <button className="btn" onClick={run}>经 WebSocket 运行</button>
+      <pre className="term">{output}</pre>
+      <button className="btn-outline" onClick={() => navigate(-1)}>返回</button>
+    </div>
+  )
+}
+===== END FILE: frontend/src/pages/ToolDetail.jsx =====
+
+===== FILE: frontend/src/pages/Tools.jsx =====
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { api } from '../api'
+
+export default function Tools() {
+  const navigate = useNavigate()
+  const [items, setItems] = useState([])
+  const [query, setQuery] = useState('')
+  const [tab, setTab] = useState('全部')
+  const categories = useMemo(() => ['全部', ...new Set(items.map((t) => t.category))], [items])
+  const filtered = items.filter((t) => {
+    const catOk = tab === '全部' || t.category === tab
+    const q = query.trim().toLowerCase()
+    const qOk = !q || [t.name, t.description, t.command].join(' ').toLowerCase().includes(q)
+    return catOk && qOk
+  })
+
+  useEffect(() => {
+    api.tools().then((data) => setItems(data.items || []))
+  }, [])
+
+  return (
+    <div className="page stack">
+      <h1>工具库</h1>
+      <p className="muted">分类 + 搜索</p>
+      <input className="input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索名称 / 说明 / 命令" />
+      <div className="tabs">
+        {categories.map((c) => (
+          <button key={c} className={`chip${tab === c ? ' active' : ''}`} onClick={() => setTab(c)}>{c}</button>
+        ))}
+      </div>
+      {filtered.map((tool) => (
+        <div className="card" key={tool.name} onClick={() => navigate(`/app/tools/${encodeURIComponent(tool.name)}`)} style={{ cursor: 'pointer' }}>
+          <p className="brand">{tool.category}</p>
+          <h3>{tool.name}</h3>
+          <p className="muted">{tool.description}</p>
+          <p>command = {tool.command}</p>
+        </div>
+      ))}
+    </div>
+  )
+}
+===== END FILE: frontend/src/pages/Tools.jsx =====
+
+===== FILE: frontend/src/router.js =====
+import { createRouter, createWebHistory } from 'vue-router'
+import PermissionChooser from './views/PermissionChooser.vue'
+import Shell from './views/Shell.vue'
+import Dashboard from './views/Dashboard.vue'
+import Tools from './views/Tools.vue'
+import ToolDetail from './views/ToolDetail.vue'
+import Terminal from './views/Terminal.vue'
+import Settings from './views/Settings.vue'
+
+export default createRouter({
+  history: createWebHistory(),
+  routes: [
+    { path: '/', component: PermissionChooser },
+    {
+      path: '/app',
+      component: Shell,
+      children: [
+        { path: '', redirect: '/app/dashboard' },
+        { path: 'dashboard', component: Dashboard },
+        { path: 'tools', component: Tools },
+        { path: 'tools/:name', component: ToolDetail },
+        { path: 'terminal', component: Terminal },
+        { path: 'settings', component: Settings }
+      ]
+    }
+  ]
+})
+===== END FILE: frontend/src/router.js =====
+
+===== FILE: frontend/src/styles.css =====
+:root {
+  --bg: #07111b;
+  --panel: #0c1a27;
+  --line: rgba(61, 224, 197, 0.18);
+  --text: #dff7f1;
+  --muted: #8fb4b0;
+  --accent: #3de0c5;
+  --danger: #ff6b6b;
+  --ok: #4ade80;
+  --sans: "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; margin: 0; }
+body {
+  font-family: var(--sans);
+  color: var(--text);
+  background: radial-gradient(900px 420px at 20% -10%, rgba(61, 224, 197, 0.14), transparent 50%), #07111b;
+}
+
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+a { color: inherit; text-decoration: none; }
+
+.phone {
+  min-height: 100%;
+  display: flex;
+  justify-content: center;
+  padding: 18px;
+}
+.frame {
+  width: min(430px, 100%);
+  min-height: calc(100vh - 36px);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 28px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.page { padding: 22px 18px 28px; flex: 1; overflow: auto; }
+.page h1 { margin: 0 0 6px; font-size: 28px; }
+.muted { color: var(--muted); margin: 0 0 14px; }
+.danger { color: var(--danger); }
+.ok { color: var(--ok); }
+
+.stack { display: flex; flex-direction: column; gap: 10px; }
+.card {
+  background: rgba(7, 19, 29, 0.9);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 14px 16px;
+}
+.card h3 { margin: 0 0 6px; }
+
+.btn, .btn-outline {
+  width: 100%;
+  border-radius: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgba(61, 224, 197, 0.45);
+  background: rgba(61, 224, 197, 0.14);
+}
+.btn-outline { background: transparent; }
+.btn.small, .btn-outline.small { width: auto; padding: 8px 12px; }
+
+.input {
+  width: 100%;
+  background: #07131d;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.tabs { display: flex; gap: 6px; overflow: auto; padding-bottom: 4px; }
+.chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: transparent;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.chip.active { color: var(--accent); border-color: var(--accent); }
+
+.term {
+  background: #02080d;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 12px;
+  min-height: 240px;
+  white-space: pre-wrap;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.nav {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  border-top: 1px solid var(--line);
+  background: #08141f;
+}
+.nav a {
+  padding: 10px 0 12px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+.nav a.active { color: var(--accent); }
+.brand { color: var(--accent); letter-spacing: 0.08em; font-size: 12px; margin-bottom: 8px; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; }
+===== END FILE: frontend/src/styles.css =====
+
+===== FILE: frontend/src/views/Dashboard.vue =====
+<template>
+  <div class="page stack">
+    <div class="brand">MAINACTIVITY</div>
+    <h1>仪表盘</h1>
+    <p class="muted">状态 + 快捷工具</p>
+    <p v-if="notice" class="danger">{{ notice }}</p>
+    <div class="card">
+      <h3>运行状态</h3>
+      <p>请求权限: {{ requestedMode }}</p>
+      <p>当前执行器: {{ status.executor }}</p>
+      <p>JNI: {{ status.jni }}</p>
+      <p>主机: {{ status.host }}</p>
+      <p>{{ status.container }}</p>
+      <p v-for="line in status.hardware || []" :key="line">{{ line }}</p>
+    </div>
+    <div class="row">
+      <button class="btn small" @click="$router.push('/app/terminal')">全屏终端</button>
+      <button class="btn-outline small" @click="$router.push('/app/tools')">工具库</button>
+      <button class="btn-outline small" @click="$router.push('/app/settings')">设置</button>
+    </div>
+    <h3>快捷工具</h3>
+    <div class="card" v-for="tool in shortcuts" :key="tool.name">
+      <h3>{{ tool.name }}</h3>
+      <p class="muted">{{ tool.description }}</p>
+      <button class="btn small" @click="$router.push('/app/tools/' + encodeURIComponent(tool.name))">打开</button>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { onMounted, ref } from 'vue'
+import { api } from '../api'
+
+const status = ref({})
+const shortcuts = ref([])
+const notice = sessionStorage.getItem('kd-notice') || ''
+const requestedMode = sessionStorage.getItem('kd-mode') || 'NORMAL'
+
+onMounted(async () => {
+  status.value = await api.status()
+  const data = await api.tools()
+  shortcuts.value = (data.items || []).slice(0, 4)
+})
+</script>
+===== END FILE: frontend/src/views/Dashboard.vue =====
+
+===== FILE: frontend/src/views/Desktop.vue =====
+<template>
+  <div>
+    <div class="page-head">
+      <div>
+        <h1>桌面</h1>
+        <p>运维快捷入口。这是工作台桌面，不是 Kali 图形会话。</p>
+      </div>
+    </div>
+    <div class="desktop">
+      <div class="icon-grid">
+        <button class="desk-icon" v-for="app in apps" :key="app.to" @click="$router.push(app.to)">
+          <div class="tile">{{ app.mark }}</div>
+          {{ app.name }}
+        </button>
+      </div>
+      <div class="window">
+        <h3>会话状态</h3>
+        <p class="muted">执行器：普通用户</p>
+        <p class="ok">chroot / Kali 根文件系统：未挂载</p>
+        <p class="ok">内核模块：未加载</p>
+        <p class="muted">打开任一图标进入对应工作台模块。</p>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+const apps = [
+  { name: '仪表盘', mark: 'D', to: '/' },
+  { name: '工具库', mark: 'T', to: '/tools' },
+  { name: '工作流', mark: 'W', to: '/workflow' },
+  { name: '终端', mark: '>', to: '/terminal' },
+  { name: '报告', mark: 'R', to: '/reports' },
+  { name: '设置', mark: 'S', to: '/settings' }
+]
+</script>
+===== END FILE: frontend/src/views/Desktop.vue =====
+
+===== FILE: frontend/src/views/PermissionChooser.vue =====
+<template>
+  <div class="phone">
+    <div class="frame">
+      <div class="page stack">
+        <div class="brand">KALIDROID</div>
+        <h1>启动权限选择</h1>
+        <p class="muted">PermissionChooserActivity · 检测、存储、获取执行器</p>
+        <div class="card">
+          <h3>PermissionManager.detect()</h3>
+          <p>normal={{ detect.normal }}</p>
+          <p>adb={{ detect.adb }}</p>
+          <p>root={{ detect.root }}</p>
+          <p class="muted">su={{ detect.hasSu }} · Shizuku={{ detect.shizuku }}</p>
+        </div>
+        <button class="btn" @click="choose('NORMAL')">NormalExecutor · Runtime.exec()</button>
+        <button class="btn-outline" @click="choose('ADB')">AdbExecutor · Shizuku（锁定）</button>
+        <button class="btn-outline" @click="choose('ROOT')">RootExecutor · su -c（锁定）</button>
+        <p v-if="error" class="danger">{{ error }}</p>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { api } from '../api'
+
+const router = useRouter()
+const detect = ref({ normal: true, adb: false, root: false, hasSu: false, shizuku: false })
+const error = ref('')
+
+async function choose(mode) {
+  error.value = ''
+  try {
+    const result = await api.choose(mode)
+    sessionStorage.setItem('kd-mode', result.requestedMode)
+    sessionStorage.setItem('kd-notice', result.notice || '')
+    router.push('/app/dashboard')
+  } catch (e) {
+    error.value = e.message
+  }
+}
+
+onMounted(async () => {
+  try {
+    detect.value = await api.detect()
+  } catch (e) {
+    error.value = e.message
+  }
+})
+</script>
+===== END FILE: frontend/src/views/PermissionChooser.vue =====
+
+===== FILE: frontend/src/views/Reports.vue =====
+<template>
+  <div>
+    <div class="page-head">
+      <div>
+        <h1>报告</h1>
+        <p>生成系统快照报告，用于巡检归档。不含漏洞扫描结果。</p>
+      </div>
+      <button class="btn" @click="generate">生成快照</button>
+    </div>
+    <div class="grid grid-2">
+      <div class="card">
+        <h2>历史</h2>
+        <table class="table">
+          <thead><tr><th>时间</th><th>标题</th></tr></thead>
+          <tbody>
+            <tr v-for="r in reports" :key="r.id" @click="current = r" style="cursor:pointer">
+              <td>{{ r.createdAt }}</td>
+              <td>{{ r.title }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <h2>{{ current?.title || '未选择报告' }}</h2>
+        <p class="muted">{{ current?.summary }}</p>
+        <pre class="term">{{ current ? JSON.stringify(current.sections, null, 2) : '选择左侧报告查看详情' }}</pre>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { onMounted, ref } from 'vue'
+import { api } from '../api'
+
+const reports = ref([])
+const current = ref(null)
+
+async function load() {
+  const data = await api.reports()
+  reports.value = data.items || []
+  current.value = reports.value[0] || null
+}
+
+async function generate() {
+  const report = await api.generateReport('系统快照报告')
+  await load()
+  current.value = report
+}
+
+onMounted(load)
+</script>
+===== END FILE: frontend/src/views/Reports.vue =====
+
+===== FILE: frontend/src/views/Settings.vue =====
+<template>
+  <div class="page stack">
+    <h1>设置</h1>
+    <p class="muted">权限切换 / 容器管理 / 主题</p>
+    <div class="card">
+      <p>当前执行器: {{ settings.executor }}</p>
+      <p>主题: {{ dark ? '深色' : '浅色' }}</p>
+    </div>
+    <button class="btn" @click="choose('NORMAL')">权限：普通执行器</button>
+    <button class="btn-outline" @click="choose('ADB')">权限：ADB / Shizuku（锁定）</button>
+    <button class="btn-outline" @click="choose('ROOT')">权限：Root su -c（锁定）</button>
+    <button class="btn" @click="container('start')">容器：start()</button>
+    <button class="btn-outline" @click="container('stop')">容器：stop()</button>
+    <button class="btn-outline" @click="container('exec')">容器：exec()</button>
+    <button class="btn" @click="dark = !dark">主题：{{ dark ? '切换浅色' : '切换深色' }}</button>
+    <p :class="msg.startsWith('拒绝') || msg.includes('锁定') || msg.includes('禁用') ? 'danger' : 'ok'">{{ msg }}</p>
+  </div>
+</template>
+
+<script setup>
+import { onMounted, ref } from 'vue'
+import { api } from '../api'
+
+const settings = ref({ executor: 'NORMAL' })
+const dark = ref(true)
+const msg = ref('')
+
+async function choose(mode) {
+  const r = await api.choose(mode)
+  msg.value = r.notice || `已选择 ${r.executor}`
+  settings.value.executor = r.executor
+}
+
+async function container(action) {
+  const r = await api.container(action)
+  msg.value = r.message
+}
+
+onMounted(async () => {
+  settings.value = await api.settings()
+})
+</script>
+===== END FILE: frontend/src/views/Settings.vue =====
+
+===== FILE: frontend/src/views/Shell.vue =====
+<template>
+  <div class="phone">
+    <div class="frame">
+      <router-view />
+      <nav class="nav">
+        <router-link to="/app/dashboard">仪表盘</router-link>
+        <router-link to="/app/tools">工具库</router-link>
+        <router-link to="/app/terminal">终端</router-link>
+        <router-link to="/app/settings">设置</router-link>
+      </nav>
+    </div>
+  </div>
+</template>
+===== END FILE: frontend/src/views/Shell.vue =====
+
+===== FILE: frontend/src/views/Terminal.vue =====
+<template>
+  <div class="page stack">
+    <h1>全屏终端</h1>
+    <p class="muted">TerminalActivity + TerminalView ANSI 渲染</p>
+    <div class="tabs">
+      <button class="chip" v-for="c in commands" :key="c" @click="input = c">{{ c }}</button>
+    </div>
+    <form class="row" @submit.prevent="run">
+      <input class="input" v-model="input" />
+      <button class="btn small" type="submit">运行</button>
+    </form>
+    <pre class="term">{{ output }}</pre>
+  </div>
+</template>
+
+<script setup>
+import { ref } from 'vue'
+import { api } from '../api'
+
+const commands = ['date', 'uname', 'hostname', 'whoami', 'id', 'uptime', 'pwd', 'df', 'free', 'ls']
+const input = ref('uname')
+const output = ref('KaliDroid terminal ready.\nAllowed: date uname hostname whoami id uptime pwd df free ls')
+
+async function run() {
+  try {
+    const r = await api.terminal(input.value)
+    output.value += `\n$ ${r.command}\n${r.stdout || r.stderr || ''}`
+  } catch (e) {
+    output.value += `\n拒绝: ${e.message}`
+  }
+}
+</script>
+===== END FILE: frontend/src/views/Terminal.vue =====
+
+===== FILE: frontend/src/views/ToolDetail.vue =====
+<template>
+  <div class="page stack">
+    <p class="brand">TOOLDETAILSCREEN</p>
+    <h1>{{ tool.name || '工具详情' }}</h1>
+    <p class="muted">{{ tool.description }}</p>
+    <div class="card">
+      <p>分类: {{ tool.category }}</p>
+      <p>命令模板: {{ tool.command }}</p>
+    </div>
+    <input class="input" v-model="extra" placeholder="附加参数（不会绕过白名单）" />
+    <button class="btn" @click="run">用当前执行器运行</button>
+    <pre class="term">{{ output }}</pre>
+    <button class="btn-outline" @click="$router.back()">返回</button>
+  </div>
+</template>
+
+<script setup>
+import { onMounted, ref } from 'vue'
+import { useRoute } from 'vue-router'
+import { api } from '../api'
+
+const route = useRoute()
+const tool = ref({})
+const extra = ref('')
+const output = ref('尚未执行')
+
+async function run() {
+  const result = await api.runTool(tool.value.name)
+  const ignored = extra.value ? `附加参数已忽略: ${extra.value}\n` : ''
+  output.value = ignored + (result.stdout || result.stderr || JSON.stringify(result, null, 2))
+}
+
+onMounted(async () => {
+  tool.value = await api.tool(route.params.name)
+})
+</script>
+===== END FILE: frontend/src/views/ToolDetail.vue =====
+
+===== FILE: frontend/src/views/Tools.vue =====
+<template>
+  <div class="page stack">
+    <h1>工具库</h1>
+    <p class="muted">分类 + 搜索</p>
+    <input class="input" v-model="query" placeholder="搜索名称 / 说明 / 命令" />
+    <div class="tabs">
+      <button v-for="c in categories" :key="c" class="chip" :class="{ active: tab === c }" @click="tab = c">{{ c }}</button>
+    </div>
+    <div class="card" v-for="tool in filtered" :key="tool.name" @click="$router.push('/app/tools/' + encodeURIComponent(tool.name))" style="cursor:pointer">
+      <p class="brand">{{ tool.category }}</p>
+      <h3>{{ tool.name }}</h3>
+      <p class="muted">{{ tool.description }}</p>
+      <p>command = {{ tool.command }}</p>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { computed, onMounted, ref } from 'vue'
+import { api } from '../api'
+
+const items = ref([])
+const query = ref('')
+const tab = ref('全部')
+const categories = computed(() => ['全部', ...new Set(items.value.map((t) => t.category))])
+const filtered = computed(() => items.value.filter((t) => {
+  const catOk = tab.value === '全部' || t.category === tab.value
+  const q = query.value.trim().toLowerCase()
+  const qOk = !q || [t.name, t.description, t.command].join(' ').toLowerCase().includes(q)
+  return catOk && qOk
+}))
+
+onMounted(async () => {
+  const data = await api.tools()
+  items.value = data.items || []
+})
+</script>
+===== END FILE: frontend/src/views/Tools.vue =====
+
+===== FILE: frontend/src/views/TxtConsole.vue =====
+<template>
+  <div class="txt-wrap">
+    <pre class="txt" ref="board">{{ text }}</pre>
+    <form class="txt-form" @submit.prevent="submit">
+      <span>&gt;</span>
+      <input v-model="line" autocomplete="off" spellcheck="false" />
+    </form>
+  </div>
+</template>
+
+<script setup>
+import { nextTick, onMounted, ref } from 'vue'
+import { api } from '../api'
+
+const text = ref('KaliDroid TXT\nloading...\n')
+const line = ref('')
+const board = ref(null)
+
+function append(chunk) {
+  text.value += chunk.endsWith('\n') ? chunk : `${chunk}\n`
+  nextTick(() => {
+    if (board.value) board.value.scrollTop = board.value.scrollHeight
+  })
+}
+
+async function submit() {
+  const cmd = line.value.trim()
+  line.value = ''
+  if (!cmd) return
+  append(`> ${cmd}`)
+  try {
+    const result = await api.txt(cmd)
+    append(result.text || '')
+  } catch (e) {
+    append(e.message)
+  }
+}
+
+onMounted(async () => {
+  const result = await api.txt('help')
+  text.value = result.text || ''
+})
+</script>
+===== END FILE: frontend/src/views/TxtConsole.vue =====
+
+===== FILE: frontend/src/views/Workflow.vue =====
+<template>
+  <div>
+    <div class="page-head">
+      <div>
+        <h1>工作流编排</h1>
+        <p>节点只允许系统信息、文件审计、白名单命令和报告生成。</p>
+      </div>
+      <button class="btn" @click="save">保存当前工作流</button>
+    </div>
+    <div class="grid grid-2">
+      <div class="card">
+        <h2>已保存</h2>
+        <div class="chips" style="margin-bottom:12px">
+          <button v-for="w in workflows" :key="w.id" class="chip" :class="{ active: current?.id === w.id }" @click="select(w)">
+            {{ w.name }}
+          </button>
+        </div>
+        <input class="input" v-model="draft.name" placeholder="名称" />
+        <textarea v-model="draft.description" style="margin-top:8px;min-height:70px"></textarea>
+        <div class="flow" style="margin-top:14px">
+          <template v-for="(node, i) in draft.nodes" :key="node.id">
+            <div class="node">
+              <strong>{{ node.label }}</strong>
+              <small>{{ node.type }}</small>
+            </div>
+            <span v-if="i < draft.nodes.length - 1" class="arrow">-</span>
+          </template>
+        </div>
+        <p class="muted" style="margin-top:12px">可添加节点：</p>
+        <div class="chips">
+          <button class="chip" v-for="n in palette" :key="n.type" @click="addNode(n)">{{ n.label }}</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>执行日志</h2>
+        <button class="btn" @click="run">运行</button>
+        <pre class="term" style="margin-top:12px">{{ logText }}</pre>
+      </div>
+    </div>
+  </div>
+</template>
+
+<script setup>
+import { onMounted, reactive, ref } from 'vue'
+import { api } from '../api'
+
+const workflows = ref([])
+const current = ref(null)
+const logText = ref('尚未运行')
+const draft = reactive({ id: '', name: '', description: '', nodes: [] })
+const palette = [
+  { type: 'system.info', label: '系统信息' },
+  { type: 'hardware.snapshot', label: '硬件状态' },
+  { type: 'network.summary', label: '网络摘要' },
+  { type: 'files.list', label: '列出文件' },
+  { type: 'hash.file', label: '文件哈希' },
+  { type: 'report.generate', label: '生成报告' }
+]
+
+function select(w) {
+  current.value = w
+  draft.id = w.id
+  draft.name = w.name
+  draft.description = w.description
+  draft.nodes = JSON.parse(JSON.stringify(w.nodes || []))
+}
+
+function addNode(n) {
+  draft.nodes.push({
+    id: `n${Date.now()}`,
+    type: n.type,
+    label: n.label,
+    params: n.type === 'hash.file' ? { path: 'README.md' } : {}
+  })
+}
+
+async function load() {
+  const data = await api.workflows()
+  workflows.value = data.items || []
+  if (workflows.value[0]) select(workflows.value[0])
+}
+
+async function save() {
+  const saved = await api.saveWorkflow({
+    id: draft.id || `wf-${Date.now()}`,
+    name: draft.name,
+    description: draft.description,
+    nodes: draft.nodes
+  })
+  await load()
+  select(saved)
+}
+
+async function run() {
+  if (!draft.id) await save()
+  const result = await api.runWorkflow(draft.id)
+  logText.value = JSON.stringify(result, null, 2)
+}
+
+onMounted(load)
+</script>
+===== END FILE: frontend/src/views/Workflow.vue =====
+
+===== FILE: frontend/vite.config.js =====
+import { defineConfig } from 'vite'
+import react from '@vitejs/plugin-react'
+
+export default defineConfig({
+  plugins: [react()],
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    allowedHosts: ['.monkeycode-ai.online'],
+    proxy: {
+      '/api': {
+        target: 'http://127.0.0.1:3001',
+        changeOrigin: true
+      },
+      '/ws': {
+        target: 'ws://127.0.0.1:3001',
+        ws: true
+      }
+    }
+  }
+})
+===== END FILE: frontend/vite.config.js =====
+
+===== FILE: gradle.properties =====
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+android.useAndroidX=true
+kotlin.code.style=official
+android.nonTransitiveRClass=true
+===== END FILE: gradle.properties =====
+
+===== FILE: gradle/wrapper/gradle-wrapper.properties =====
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\://services.gradle.org/distributions/gradle-8.9-bin.zip
+networkTimeout=10000
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+===== END FILE: gradle/wrapper/gradle-wrapper.properties =====
+
+===== FILE: gradlew =====
+#!/bin/sh
+
+#
+# Copyright © 2015-2021 the original authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+
+##############################################################################
+#
+#   Gradle start up script for POSIX generated by Gradle.
+#
+#   Important for running:
+#
+#   (1) You need a POSIX-compliant shell to run this script. If your /bin/sh is
+#       noncompliant, but you have some other compliant shell such as ksh or
+#       bash, then to run this script, type that shell name before the whole
+#       command line, like:
+#
+#           ksh Gradle
+#
+#       Busybox and similar reduced shells will NOT work, because this script
+#       requires all of these POSIX shell features:
+#         * functions;
+#         * expansions «$var», «${var}», «${var:-default}», «${var+SET}»,
+#           «${var#prefix}», «${var%suffix}», and «$( cmd )»;
+#         * compound commands having a testable exit status, especially «case»;
+#         * various built-in commands including «command», «set», and «ulimit».
+#
+#   Important for patching:
+#
+#   (2) This script targets any POSIX shell, so it avoids extensions provided
+#       by Bash, Ksh, etc; in particular arrays are avoided.
+#
+#       The "traditional" practice of packing multiple parameters into a
+#       space-separated string is a well documented source of bugs and security
+#       problems, so this is (mostly) avoided, by progressively accumulating
+#       options in "$@", and eventually passing that to Java.
+#
+#       Where the inherited environment variables (DEFAULT_JVM_OPTS, JAVA_OPTS,
+#       and GRADLE_OPTS) rely on word-splitting, this is performed explicitly;
+#       see the in-line comments for details.
+#
+#       There are tweaks for specific operating systems such as AIX, CygWin,
+#       Darwin, MinGW, and NonStop.
+#
+#   (3) This script is generated from the Groovy template
+#       https://github.com/gradle/gradle/blob/HEAD/platforms/jvm/plugins-application/src/main/resources/org/gradle/api/internal/plugins/unixStartScript.txt
+#       within the Gradle project.
+#
+#       You can find Gradle at https://github.com/gradle/gradle/.
+#
+##############################################################################
+
+# Attempt to set APP_HOME
+
+# Resolve links: $0 may be a link
+app_path=$0
+
+# Need this for daisy-chained symlinks.
+while
+    APP_HOME=${app_path%"${app_path##*/}"}  # leaves a trailing /; empty if no leading path
+    [ -h "$app_path" ]
+do
+    ls=$( ls -ld "$app_path" )
+    link=${ls#*' -> '}
+    case $link in             #(
+      /*)   app_path=$link ;; #(
+      *)    app_path=$APP_HOME$link ;;
+    esac
+done
+
+# This is normally unused
+# shellcheck disable=SC2034
+APP_BASE_NAME=${0##*/}
+# Discard cd standard output in case $CDPATH is set (https://github.com/gradle/gradle/issues/25036)
+APP_HOME=$( cd -P "${APP_HOME:-./}" > /dev/null && printf '%s
+' "$PWD" ) || exit
+
+# Use the maximum available, or set MAX_FD != -1 to use that value.
+MAX_FD=maximum
+
+warn () {
+    echo "$*"
+} >&2
+
+die () {
+    echo
+    echo "$*"
+    echo
+    exit 1
+} >&2
+
+# OS specific support (must be 'true' or 'false').
+cygwin=false
+msys=false
+darwin=false
+nonstop=false
+case "$( uname )" in                #(
+  CYGWIN* )         cygwin=true  ;; #(
+  Darwin* )         darwin=true  ;; #(
+  MSYS* | MINGW* )  msys=true    ;; #(
+  NONSTOP* )        nonstop=true ;;
+esac
+
+CLASSPATH=$APP_HOME/gradle/wrapper/gradle-wrapper.jar
+
+
+# Determine the Java command to use to start the JVM.
+if [ -n "$JAVA_HOME" ] ; then
+    if [ -x "$JAVA_HOME/jre/sh/java" ] ; then
+        # IBM's JDK on AIX uses strange locations for the executables
+        JAVACMD=$JAVA_HOME/jre/sh/java
+    else
+        JAVACMD=$JAVA_HOME/bin/java
+    fi
+    if [ ! -x "$JAVACMD" ] ; then
+        die "ERROR: JAVA_HOME is set to an invalid directory: $JAVA_HOME
+
+Please set the JAVA_HOME variable in your environment to match the
+location of your Java installation."
+    fi
+else
+    JAVACMD=java
+    if ! command -v java >/dev/null 2>&1
+    then
+        die "ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH.
+
+Please set the JAVA_HOME variable in your environment to match the
+location of your Java installation."
+    fi
+fi
+
+# Increase the maximum file descriptors if we can.
+if ! "$cygwin" && ! "$darwin" && ! "$nonstop" ; then
+    case $MAX_FD in #(
+      max*)
+        # In POSIX sh, ulimit -H is undefined. That's why the result is checked to see if it worked.
+        # shellcheck disable=SC2039,SC3045
+        MAX_FD=$( ulimit -H -n ) ||
+            warn "Could not query maximum file descriptor limit"
+    esac
+    case $MAX_FD in  #(
+      '' | soft) :;; #(
+      *)
+        # In POSIX sh, ulimit -n is undefined. That's why the result is checked to see if it worked.
+        # shellcheck disable=SC2039,SC3045
+        ulimit -n "$MAX_FD" ||
+            warn "Could not set maximum file descriptor limit to $MAX_FD"
+    esac
+fi
+
+# Collect all arguments for the java command, stacking in reverse order:
+#   * args from the command line
+#   * the main class name
+#   * -classpath
+#   * -D...appname settings
+#   * --module-path (only if needed)
+#   * DEFAULT_JVM_OPTS, JAVA_OPTS, and GRADLE_OPTS environment variables.
+
+# For Cygwin or MSYS, switch paths to Windows format before running java
+if "$cygwin" || "$msys" ; then
+    APP_HOME=$( cygpath --path --mixed "$APP_HOME" )
+    CLASSPATH=$( cygpath --path --mixed "$CLASSPATH" )
+
+    JAVACMD=$( cygpath --unix "$JAVACMD" )
+
+    # Now convert the arguments - kludge to limit ourselves to /bin/sh
+    for arg do
+        if
+            case $arg in                                #(
+              -*)   false ;;                            # don't mess with options #(
+              /?*)  t=${arg#/} t=/${t%%/*}              # looks like a POSIX filepath
+                    [ -e "$t" ] ;;                      #(
+              *)    false ;;
+            esac
+        then
+            arg=$( cygpath --path --ignore --mixed "$arg" )
+        fi
+        # Roll the args list around exactly as many times as the number of
+        # args, so each arg winds up back in the position where it started, but
+        # possibly modified.
+        #
+        # NB: a `for` loop captures its iteration list before it begins, so
+        # changing the positional parameters here affects neither the number of
+        # iterations, nor the values presented in `arg`.
+        shift                   # remove old arg
+        set -- "$@" "$arg"      # push replacement arg
+    done
+fi
+
+
+# Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
+DEFAULT_JVM_OPTS='-Dfile.encoding=UTF-8 "-Xmx64m" "-Xms64m"'
+
+# Collect all arguments for the java command:
+#   * DEFAULT_JVM_OPTS, JAVA_OPTS, JAVA_OPTS, and optsEnvironmentVar are not allowed to contain shell fragments,
+#     and any embedded shellness will be escaped.
+#   * For example: A user cannot expect ${Hostname} to be expanded, as it is an environment variable and will be
+#     treated as '${Hostname}' itself on the command line.
+
+set -- \
+        "-Dorg.gradle.appname=$APP_BASE_NAME" \
+        -classpath "$CLASSPATH" \
+        org.gradle.wrapper.GradleWrapperMain \
+        "$@"
+
+# Stop when "xargs" is not available.
+if ! command -v xargs >/dev/null 2>&1
+then
+    die "xargs is not available"
+fi
+
+# Use "xargs" to parse quoted args.
+#
+# With -n1 it outputs one arg per line, with the quotes and backslashes removed.
+#
+# In Bash we could simply go:
+#
+#   readarray ARGS < <( xargs -n1 <<<"$var" ) &&
+#   set -- "${ARGS[@]}" "$@"
+#
+# but POSIX shell has neither arrays nor command substitution, so instead we
+# post-process each arg (as a line of input to sed) to backslash-escape any
+# character that might be a shell metacharacter, then use eval to reverse
+# that process (while maintaining the separation between arguments), and wrap
+# the whole thing up as a single "set" statement.
+#
+# This will of course break if any of these variables contains a newline or
+# an unmatched quote.
+#
+
+eval "set -- $(
+        printf '%s\n' "$DEFAULT_JVM_OPTS $JAVA_OPTS $GRADLE_OPTS" |
+        xargs -n1 |
+        sed ' s~[^-[:alnum:]+,./:=@_]~\\&~g; ' |
+        tr '\n' ' '
+    )" '"$@"'
+
+exec "$JAVACMD" "$@"
+===== END FILE: gradlew =====
+
+===== FILE: gradlew.bat =====
+@rem
+@rem Copyright 2015 the original author or authors.
+@rem
+@rem Licensed under the Apache License, Version 2.0 (the "License");
+@rem you may not use this file except in compliance with the License.
+@rem You may obtain a copy of the License at
+@rem
+@rem      https://www.apache.org/licenses/LICENSE-2.0
+@rem
+@rem Unless required by applicable law or agreed to in writing, software
+@rem distributed under the License is distributed on an "AS IS" BASIS,
+@rem WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+@rem See the License for the specific language governing permissions and
+@rem limitations under the License.
+@rem
+@rem SPDX-License-Identifier: Apache-2.0
+@rem
+
+@if "%DEBUG%"=="" @echo off
+@rem ##########################################################################
+@rem
+@rem  Gradle startup script for Windows
+@rem
+@rem ##########################################################################
+
+@rem Set local scope for the variables with windows NT shell
+if "%OS%"=="Windows_NT" setlocal
+
+set DIRNAME=%~dp0
+if "%DIRNAME%"=="" set DIRNAME=.
+@rem This is normally unused
+set APP_BASE_NAME=%~n0
+set APP_HOME=%DIRNAME%
+
+@rem Resolve any "." and ".." in APP_HOME to make it shorter.
+for %%i in ("%APP_HOME%") do set APP_HOME=%%~fi
+
+@rem Add default JVM options here. You can also use JAVA_OPTS and GRADLE_OPTS to pass JVM options to this script.
+set DEFAULT_JVM_OPTS=-Dfile.encoding=UTF-8 "-Xmx64m" "-Xms64m"
+
+@rem Find java.exe
+if defined JAVA_HOME goto findJavaFromJavaHome
+
+set JAVA_EXE=java.exe
+%JAVA_EXE% -version >NUL 2>&1
+if %ERRORLEVEL% equ 0 goto execute
+
+echo. 1>&2
+echo ERROR: JAVA_HOME is not set and no 'java' command could be found in your PATH. 1>&2
+echo. 1>&2
+echo Please set the JAVA_HOME variable in your environment to match the 1>&2
+echo location of your Java installation. 1>&2
+
+goto fail
+
+:findJavaFromJavaHome
+set JAVA_HOME=%JAVA_HOME:"=%
+set JAVA_EXE=%JAVA_HOME%/bin/java.exe
+
+if exist "%JAVA_EXE%" goto execute
+
+echo. 1>&2
+echo ERROR: JAVA_HOME is set to an invalid directory: %JAVA_HOME% 1>&2
+echo. 1>&2
+echo Please set the JAVA_HOME variable in your environment to match the 1>&2
+echo location of your Java installation. 1>&2
+
+goto fail
+
+:execute
+@rem Setup the command line
+
+set CLASSPATH=%APP_HOME%\gradle\wrapper\gradle-wrapper.jar
+
+
+@rem Execute Gradle
+"%JAVA_EXE%" %DEFAULT_JVM_OPTS% %JAVA_OPTS% %GRADLE_OPTS% "-Dorg.gradle.appname=%APP_BASE_NAME%" -classpath "%CLASSPATH%" org.gradle.wrapper.GradleWrapperMain %*
+
+:end
+@rem End local scope for the variables with windows NT shell
+if %ERRORLEVEL% equ 0 goto mainEnd
+
+:fail
+rem Set variable GRADLE_EXIT_CONSOLE if you need the _script_ return code instead of
+rem the _cmd.exe /c_ return code!
+set EXIT_CODE=%ERRORLEVEL%
+if %EXIT_CODE% equ 0 set EXIT_CODE=1
+if not ""=="%GRADLE_EXIT_CONSOLE%" exit %EXIT_CODE%
+exit /b %EXIT_CODE%
+
+:mainEnd
+if "%OS%"=="Windows_NT" endlocal
+
+:omega
+===== END FILE: gradlew.bat =====
+
+===== FILE: settings.gradle.kts =====
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.name = "KaliDroid"
+include(":app")
+===== END FILE: settings.gradle.kts =====
+
+===== FILE: start.sh =====
+#!/bin/bash
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+# Start backend API
+cd "$ROOT/backend" && npm run dev &
+BACKEND_PID=$!
+
+# Start frontend dev server on the exposed port
+cd "$ROOT/frontend" && npm run dev
+
+trap "kill $BACKEND_PID" EXIT
+===== END FILE: start.sh =====
+
