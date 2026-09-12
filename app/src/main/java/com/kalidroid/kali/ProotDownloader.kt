@@ -187,17 +187,19 @@ object ProotDownloader {
         return sb.toString()
     }
 
-    private fun oct(buf: ByteArray, off: Int, len: Int): Long? = try {
-        var v = 0L
-        var started = false
-        for (i in off until off + len) {
-            val c = buf[i].toInt().toChar()
-            when {
-                c == ' ' || c == '\u0000' -> if (started) break else continue
-                c in '0'..'7' -> { v = v * 8 + (c - '0'); started = true }
-                else -> return null
-            }
+    private fun oct(buf: ByteArray, off: Int, len: Int): Long? {
+            return try {
+                var v = 0L
+                var started = false
+                for (i in off until off + len) {
+                    val c = buf[i].toInt().toChar()
+                    when {
+                        c == ' ' || c == '\u0000' -> if (started) break else continue
+                        c in '0'..'7' -> { v = v * 8 + (c - '0'); started = true }
+                        else -> return null
+                    }
+                }
+                v
+            } catch (e: Exception) { null }
         }
-        v
-    } catch (e: Exception) { null }
 }
