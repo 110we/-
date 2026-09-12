@@ -92,15 +92,16 @@ class RootfsManager(private val context: Context = KaliDroidApp.instance) {
         fun extract(archive: File, target: File): Boolean {
             val input = openInput(archive) ?: return false
             return try {
+                var result = false
                 input.use { raw ->
                     val header = ByteArray(BLOCK)
                     while (true) {
                         val read = readFully(raw, header)
-                        if (read == 0) return true
-                        if (read < BLOCK) return false
+                        if (read == 0) { result = true; break }
+                        if (read < BLOCK) { result = false; break }
                         if (header.all { it == 0.toByte() }) continue
                         val name = str(header, 0, 100)
-                        val size = oct(header, 124, 12) ?: return false
+                        val size = oct(header, 124, 12) ?: run { result = false; break }
                         val type = header[156].toInt().toChar()
                         if (name.isBlank() || name == "./") { skip(raw, size); continue }
                         val out = File(target, sanitize(name))
@@ -114,16 +115,18 @@ class RootfsManager(private val context: Context = KaliDroidApp.instance) {
                                     val buf = ByteArray(64 * 1024)
                                     while (remaining > 0) {
                                         val n = raw.read(buf, 0, minOf(buf.size.toLong(), remaining).toInt())
-                                        if (n <= 0) return false
+                                        if (n <= 0) { result = false; break }
                                         fos.write(buf, 0, n)
                                         remaining -= n
                                     }
                                 }
                             }
                         }
+                        if (!result) break
                         skip(raw, (BLOCK - (size % BLOCK)) % BLOCK)
                     }
                 }
+                result
             } catch (e: Exception) {
                 false
             }
@@ -176,18 +179,20 @@ class RootfsManager(private val context: Context = KaliDroidApp.instance) {
             return sb.toString()
         }
 
-        private fun oct(buf: ByteArray, off: Int, len: Int): Long? = try {
-            var v = 0L
-            var started = false
-            for (i in off until off + len) {
-                val c = buf[i].toInt().toChar()
-                when {
-                    c == ' ' || c == '\u0000' -> if (started) break else continue
-                    c in '0'..'7' -> { v = v * 8 + (c - '0'); started = true }
-                    else -> return null
+        private fun oct(buf: ByteArray, off: Int, len: Int): Long? {
+            return try {
+                var v = 0L
+                var started = false
+                for (i in off until off + len) {
+                    val c = buf[i].toInt().toChar()
+                    when {
+                        c == ' ' || c == '\u0000' -> if (started) break else continue
+                        c in '0'..'7' -> { v = v * 8 + (c - '0'); started = true }
+                        else -> return null
+                    }
                 }
-            }
-            v
-        } catch (e: Exception) { null }
+                v
+            } catch (e: Exception) { null }
+        }
     }
 }

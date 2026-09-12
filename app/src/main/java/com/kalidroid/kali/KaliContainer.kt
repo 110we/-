@@ -60,7 +60,7 @@ class KaliContainer(
 
     fun start(): ContainerState {
         synchronized(lock) {
-            if (process?.isAlive == true) return ContainerState(true, "容器已在运行", process!!.pid())
+            if (process?.isAlive == true) return ContainerState(true, "容器已在运行", pidOf(process!!))
             val rootfs = rootfsManager.verify()
             if (!rootfs.present) {
                 state = State.MISSING_ROOTFS
@@ -79,7 +79,7 @@ class KaliContainer(
                     .redirectErrorStream(false)
                 process = pb.start()
                 state = State.RUNNING
-                ContainerState(true, "Kali 容器运行中 (shell=$shell)", process!!.pid())
+                ContainerState(true, "Kali 容器运行中 (shell=$shell)", pidOf(process!!))
             } catch (e: Exception) {
                 state = State.FAILED
                 ContainerState(false, "启动失败: ${e.message}")
@@ -109,7 +109,7 @@ class KaliContainer(
         return ContainerState(
             running = alive,
             message = "state=${state.name}; rootfs=${rootfs.message}; proot=${if (prootInstalled()) "ok" else "missing"}",
-            pid = process?.pid() ?: -1
+            pid = pidOf(process)
         )
     }
 
@@ -123,7 +123,7 @@ class KaliContainer(
         return ContainerState(
             running = alive,
             message = "state=${state.name}",
-            pid = process?.pid() ?: -1
+            pid = pidOf(process)
         )
     }
 
@@ -186,6 +186,17 @@ class KaliContainer(
         val bytes = stream.readBytes()
         val limited = if (bytes.size > max) bytes.copyOf(max) else bytes
         return String(limited, Charsets.UTF_8)
+    }
+
+    /** 兼容反射获取进程 pid（Android java.lang.Process 无公有 pid()）。 */
+    private fun pidOf(p: Process?): Int {
+        if (p == null) return -1
+        return try {
+            val m = p.javaClass.getMethod("pid")
+            m.invoke(p) as? Int ?: -1
+        } catch (e: Exception) {
+            -1
+        }
     }
 }
 
