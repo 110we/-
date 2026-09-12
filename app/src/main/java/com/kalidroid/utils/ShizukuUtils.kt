@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
 import rikka.shizuku.Shizuku
 
 /**
@@ -40,15 +42,19 @@ object ShizukuUtils {
         false
     }
 
-    /** 自动发起 Shizuku 授权请求（回调 onResult 返回是否同意） */
+    /** 自动发起 Shizuku 授权请求（回调自动切主线程，onResult 返回是否同意） */
     fun requestPermission(onResult: ((Boolean) -> Unit)? = null) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 // Shizuku 13.x: addRequestPermissionResultListener + requestPermission(int)
+                // 回调在 binder 线程，需切回主线程再触发 UI 跳转
                 val listener = object : Shizuku.OnRequestPermissionResultListener {
                     override fun onRequestPermissionResult(requestCode: Int, grantResult: Int) {
-                        onResult?.invoke(grantResult == PackageManager.PERMISSION_GRANTED)
                         runCatching { Shizuku.removeRequestPermissionResultListener(this) }
+                        val granted = grantResult == PackageManager.PERMISSION_GRANTED
+                        if (onResult != null) {
+                            kotlinx.coroutines.MainScope().launch { onResult(granted) }
+                        }
                     }
                 }
                 Shizuku.addRequestPermissionResultListener(listener)

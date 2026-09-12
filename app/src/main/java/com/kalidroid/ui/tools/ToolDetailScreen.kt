@@ -20,7 +20,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.kalidroid.KaliDroidApp
 import com.kalidroid.model.Tool
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun ToolDetailScreen(tool: Tool, onBack: () -> Unit) {
@@ -77,6 +79,18 @@ private suspend fun runTool(tool: Tool, extra: String): String {
         cmd == "kali rootfs" -> {
             val rs = container.status()
             rs.message
+        }
+        cmd == "kali download-rootfs" -> {
+            val rs = container.rootfsStatus()
+            if (rs.present) return "rootfs 已就绪：${rs.message}，无需重新下载"
+            // 阻塞式下载+解压（内含进度回调），后台线程执行
+            val result = withContext(Dispatchers.IO) {
+                container.downloadRootfs { pct ->
+                    println("KaliDroid rootfs 下载进度: ${(pct * 100).toInt()}%")
+                }
+            }
+            if (result.present) "✅ rootfs 安装完成：${result.message}"
+            else "❌ 下载/安装失败：${result.message}"
         }
         cmd == "kali proot" -> {
             "proot 安装状态: ${if (container.prootInstalled()) "已安装" else "未安装（请将 proot 放入 assets 后更新 APK）"}"

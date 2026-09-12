@@ -56,6 +56,13 @@ class KaliContainer(
 
     fun prootInstalled(): Boolean = prootFile.isFile && prootFile.canExecute()
 
+    /** rootfs 状态（代理） */
+    fun rootfsStatus(): RootfsStatus = rootfsManager.status()
+
+    /** 在线下载并安装 rootfs（代理，返回状态） */
+    fun downloadRootfs(onProgress: ((Float) -> Unit)? = null): RootfsStatus =
+        rootfsManager.downloadAndInstall(onProgress = onProgress)
+
     // ---------- 启动 / 停止 ----------
 
     fun start(): ContainerState {

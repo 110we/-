@@ -13,6 +13,15 @@
         android:supportsRtl="true"
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.KaliDroid">
+
+        <!-- Shizuku 权限结果分发 Provider（官方必需，否则授权回调不触发） -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
         <activity
             android:name=".PermissionChooserActivity"
             android:exported="true"

@@ -8,6 +8,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.InputStream
 import java.util.zip.GZIPInputStream
+import org.tukaani.xz.XZInputStream
 
 data class RootfsStatus(
     val present: Boolean,
@@ -64,6 +65,60 @@ class RootfsManager(private val context: Context = KaliDroidApp.instance) {
     fun status(): RootfsStatus = verify()
 
     fun rootfs(): File = rootfsDir
+
+    /**
+     * 在线下载 Kali rootfs 并安装（AnLinux 镜像源）。
+     * arch: arm64 / arm / x86_64
+     */
+    @Synchronized
+    fun downloadAndInstall(
+        arch: String = "arm64",
+        onProgress: ((Float) -> Unit)? = null
+    ): RootfsStatus {
+        val url = when (arch) {
+            "arm" -> "https://raw.githubusercontent.com/EXALAB/Anlinux-Resources/master/Rootfs/Kali/armhf/kali-rootfs-armhf.tar.xz"
+            "x86_64" -> "https://raw.githubusercontent.com/EXALAB/Anlinux-Resources/master/Rootfs/Kali/amd64/kali-rootfs-amd64.tar.xz"
+            else -> "https://raw.githubusercontent.com/EXALAB/Anlinux-Resources/master/Rootfs/Kali/arm64/kali-rootfs-arm64.tar.xz"
+        }
+        return runCatching {
+            val tmp = File(context.cacheDir, "kali-rootfs-download.tar.xz")
+            if (tmp.exists()) tmp.delete()
+            downloadFile(url, tmp, onProgress) ?: return RootfsStatus(false, "下载失败")
+            if (tmp.length() < 1_000_000) return RootfsStatus(false, "下载不完整（${tmp.length()} 字节）")
+            val st = extract(tmp.absolutePath)
+            tmp.delete()
+            st
+        }.getOrElse { RootfsStatus(false, "下载/安装异常: ${it.message}") }
+    }
+
+    private fun downloadFile(url: String, target: File, onProgress: ((Float) -> Unit)?): File? {
+        val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+        conn.connectTimeout = 20_000
+        conn.readTimeout = 30_000
+        conn.instanceFollowRedirects = true
+        conn.connect()
+        if (conn.responseCode !in 200..299) {
+            conn.disconnect()
+            return null
+        }
+        val total = conn.contentLengthLong
+        val input = conn.inputStream
+        target.outputStream().use { out ->
+            val buf = ByteArray(128 * 1024)
+            var read: Int
+            var done = 0L
+            while (input.read(buf).also { read = it } != -1) {
+                out.write(buf, 0, read)
+                done += read
+                if (total > 0 && onProgress != null) {
+                    onProgress((done.toFloat() / total).coerceIn(0f, 1f))
+                }
+            }
+        }
+        input.close()
+        conn.disconnect()
+        return target
+    }
 
     private fun singleTopDir(dir: File): File? {
         val entries = dir.listFiles()?.filter { it.name != "__MACOSX" } ?: return null
@@ -134,12 +189,16 @@ class RootfsManager(private val context: Context = KaliDroidApp.instance) {
         }
 
         private fun openInput(archive: File): InputStream? = try {
-            val head = ByteArray(2)
+            val head = ByteArray(6)
             FileInputStream(archive).use { raw ->
-                if (raw.read(head) != 2) return null
+                if (raw.read(head) != 6) return null
             }
             val fileInput = BufferedInputStream(FileInputStream(archive), 1 shl 16)
+            // gzip: 1f 8b
             if (head[0] == 0x1f.toByte() && head[1] == 0x8b.toByte()) GZIPInputStream(fileInput)
+            // xz: fd 37 7a 58 5a 00
+            else if (head[0] == 0xfd.toByte() && head[1] == 0x37.toByte() && head[2] == 0x7a.toByte())
+                XZInputStream(fileInput)
             else if (archive.name.endsWith(".tar")) fileInput
             else { fileInput.close(); null }
         } catch (e: Exception) { null }

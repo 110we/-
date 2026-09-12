@@ -67,5 +67,7 @@ dependencies {
     // Shizuku API：ADB 通道自动索要授权依赖
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
+    // xz 解压（rootfs 在线下载用，AnLinux 镜像为 .tar.xz）
+    implementation("org.tukaani:xz:1.9")
     debugImplementation("androidx.compose.ui:ui-tooling")
 }
