@@ -61,7 +61,7 @@ fun ToolLibraryScreen(onOpen: (Tool) -> Unit) {
                         Text(tool.category, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                         Text(tool.name, style = MaterialTheme.typography.titleMedium)
                         Text(tool.description, color = MaterialTheme.colorScheme.secondary)
-                        Text("command = ${tool.command}")
+                        Text("命令 = ${tool.command}")
                     }
                 }
             }

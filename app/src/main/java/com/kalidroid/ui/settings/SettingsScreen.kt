@@ -51,7 +51,7 @@ fun SettingsScreen(darkTheme: Boolean, onToggleTheme: () -> Unit) {
         Text("设置", style = MaterialTheme.typography.headlineMedium)
         Text("权限切换 / WebSocket 桥接 / 容器管理 / 主题", color = MaterialTheme.colorScheme.secondary)
 
-        Text("su=${RootUtils.hasSu()}  Shizuku=${ShizukuUtils.isRunning()}")
+        Text("su 可用=${RootUtils.hasSu()}  Shizuku 运行=${ShizukuUtils.isRunning()}")
         Text("原生桥接: ${if (bridge.connected) "在线" else "未连接"}")
 
         OutlinedTextField(
@@ -70,35 +70,33 @@ fun SettingsScreen(darkTheme: Boolean, onToggleTheme: () -> Unit) {
             message = "已断开原生执行器"
         }) { Text("断开 WebSocket") }
 
-        Button(modifier = Modifier.fillMaxWidth(), onClick = {
+OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
             pm.persist(ExecutorMode.NORMAL)
-            message = "已切换到 NormalExecutor"
+            message = "已切换到普通执行器"
         }) { Text("权限：普通执行器") }
-
         OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
             pm.persist(ExecutorMode.ADB)
             val alive = ShizukuUtils.isRunning()
-            message = if (alive) "已切换到 ADB / Shizuku 执行器" else "Shizuku 未运行，已降级 NORMAL"
+            message = if (alive) "已切换到 ADB / Shizuku 执行器" else "Shizuku 未运行，已降级普通"
         }) { Text("权限：ADB / Shizuku") }
 
         OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
             pm.persist(ExecutorMode.ROOT)
             val hasSu = RootUtils.hasSu()
-            message = if (hasSu) "已切换到 Root 执行器" else "未检测到 su，已降级 NORMAL"
+            message = if (hasSu) "已切换到 Root 执行器" else "未检测到 su，已降级普通"
         }) { Text("权限：Root su -c") }
-
         Button(modifier = Modifier.fillMaxWidth(), onClick = {
             message = app.kaliContainer.start().message
-        }) { Text("容器：start()") }
+        }) { Text("容器：启动") }
 
         OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
             message = app.kaliContainer.stop().message
-        }) { Text("容器：stop()") }
+        }) { Text("容器：停止") }
 
         OutlinedButton(modifier = Modifier.fillMaxWidth(), onClick = {
             val r = app.kaliContainer.exec("uname -a")
             message = if (r.ok) "容器输出: ${r.stdout.trim()}" else "容器执行失败: ${r.stderr}"
-        }) { Text("容器：exec(uname)") }
+        }) { Text("容器：执行 uname") }
 
         Button(modifier = Modifier.fillMaxWidth(), onClick = onToggleTheme) {
             Text(if (darkTheme) "主题：切换浅色" else "主题：切换深色")

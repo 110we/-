@@ -78,7 +78,7 @@ class PermissionChooserActivity : ComponentActivity() {
                         Button(
                             modifier = Modifier.fillMaxWidth(),
                             onClick = { enter(ExecutorMode.NORMAL) }
-                        ) { Text("NormalExecutor  ·  Runtime.exec()") }
+                        ) { Text("普通执行器  ·  系统命令") }
 
                         OutlinedButton(
                             modifier = Modifier.fillMaxWidth(),
@@ -87,18 +87,18 @@ class PermissionChooserActivity : ComponentActivity() {
                                     if (ShizukuUtils.isGranted()) enter(ExecutorMode.ADB)
                                     else ShizukuUtils.requestPermission { granted ->
                                         enter(if (granted) ExecutorMode.ADB else ExecutorMode.NORMAL,
-                                            if (granted) "Shizuku 已授权" else "授权被拒绝，降级 NORMAL")
+                                            if (granted) "Shizuku 已授权" else "授权被拒绝，降级普通")
                                     }
                                 } else {
-                                    enter(ExecutorMode.ADB, "Shizuku 未运行，将降级 NORMAL")
+                                    enter(ExecutorMode.ADB, "Shizuku 未运行，将降级普通")
                                 }
                             }
-                        ) { Text("AdbExecutor  ·  Shizuku") }
+                        ) { Text("ADB 执行器  ·  Shizuku") }
 
                         OutlinedButton(
                             modifier = Modifier.fillMaxWidth(),
-                            onClick = { enter(ExecutorMode.ROOT, if (RootUtils.hasSu()) "已检测到 su" else "未检测到 su，将降级 NORMAL") }
-                        ) { Text("RootExecutor  ·  su -c") }
+                            onClick = { enter(ExecutorMode.ROOT, if (RootUtils.hasSu()) "已检测到 su" else "未检测到 su，将降级普通") }
+                        ) { Text("Root 执行器  ·  su -c") }
 
                         Text("高级通道可用时启用，不可用时自动回退普通执行器。", color = MaterialTheme.colorScheme.secondary)
                     }

@@ -57,10 +57,10 @@ fun DashboardScreen(
         Card(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("运行状态", style = MaterialTheme.typography.titleMedium)
-                Text("请求权限: ${requestedMode.ifBlank { "NORMAL" }}")
+                Text("请求权限: ${requestedMode.ifBlank { "普通" }}")
                 Text("当前执行器: ${app.permissionManager.currentMode()}")
-                Text("JNI: ${runCatching { NativeLib.version() }.getOrDefault("jni-unloaded")}")
-                Text("主机: ${runCatching { NativeLib.hostFingerprint() }.getOrDefault("unavailable")}")
+                Text("JNI: ${runCatching { NativeLib.version() }.getOrDefault("未加载")}")
+                Text("主机: ${runCatching { NativeLib.hostFingerprint() }.getOrDefault("不可用")}")
                 Text(app.kaliContainer.statusLight().message)
                 Text(WifiController().scan().message)
                 Text(BluetoothController().scanDevices().message)
