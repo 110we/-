@@ -92,6 +92,20 @@ private suspend fun runTool(tool: Tool, extra: String): String {
             if (result.present) "✅ rootfs 安装完成：${result.message}"
             else "❌ 下载/安装失败：${result.message}"
         }
+        cmd == "kali download-proot" -> {
+            if (container.prootInstalled()) return "proot 已安装：${container.statusFromProot()}"
+            val path = withContext(Dispatchers.IO) {
+                container.downloadProot()
+            }
+            if (path != null) "✅ proot 下载安装完成：$path"
+            else "❌ proot 下载失败（请检查网络 / Termux 源可用性）"
+        }
+        cmd == "kali install-tools" -> {
+            if (extra.isBlank()) return "请填写要安装的工具包名，例如：nmap hydra sqlmap"
+            withContext(Dispatchers.IO) {
+                container.installTools(extra.trim())
+            }
+        }
         cmd == "kali proot" -> {
             "proot 安装状态: ${if (container.prootInstalled()) "已安装" else "未安装（请将 proot 放入 assets 后更新 APK）"}"
         }

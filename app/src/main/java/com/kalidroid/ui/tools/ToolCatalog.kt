@@ -21,9 +21,11 @@ object ToolCatalog {
         Tool("容器执行", "容器", "在容器内执行命令。命令模板：kali exec <cmd>", "kali exec"),
         Tool("Rootfs 状态", "容器", "检查 rootfs 是否就绪。命令模板：kali rootfs", "kali rootfs"),
         Tool("在线下载 Rootfs", "容器", "从 AnLinux 镜像下载并安装 Kali rootfs（约 85MB）。命令模板：kali download-rootfs", "kali download-rootfs"),
+        Tool("在线下载 Proot", "容器", "从 Termux 源下载 proot 引擎（容器必需）。命令模板：kali download-proot", "kali download-proot"),
         Tool("安装 Proot", "容器", "释放 proot 二进制（需 assets 内置）。命令模板：kali proot", "kali proot"),
         // ---------- 工具链（容器内可用命令） ----------
         Tool("容器 Shell", "工具链", "进入容器内交互 shell（proot）。命令模板：kali shell", "kali shell"),
+        Tool("安装工具链", "工具链", "容器内 apt 在线安装工具，附加参数填包名（如 nmap hydra sqlmap）。命令模板：kali install-tools", "kali install-tools"),
         Tool("Nmap 扫描", "工具链", "容器内网络扫描（需 rootfs 内安装）。命令模板：nmap -sP", "nmap -sP"),
         Tool("Hydra 爆破", "工具链", "容器内口令测试（需 rootfs 内安装）。命令模板：hydra", "hydra"),
         Tool("Metasploit", "工具链", "容器内 MSF 框架（需 rootfs 内安装）。命令模板：msfconsole", "msfconsole"),

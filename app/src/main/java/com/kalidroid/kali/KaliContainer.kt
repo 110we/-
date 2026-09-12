@@ -63,6 +63,29 @@ class KaliContainer(
     fun downloadRootfs(onProgress: ((Float) -> Unit)? = null): RootfsStatus =
         rootfsManager.downloadAndInstall(onProgress = onProgress)
 
+    /** 在线下载并安装 proot 二进制（Termux 源）。成功返回文件路径 */
+    fun downloadProot(): String? = ProotDownloader.install(context)
+
+    /** proot 状态描述（用于 UI 展示） */
+    fun statusFromProot(): String =
+        if (prootInstalled()) "${prootFile.absolutePath} (${prootFile.length()} 字节)"
+        else "未安装"
+
+    /**
+     * 在线安装 Kali 工具链（容器内 apt-get install）。
+     * packages: 空格分隔的软件包名，例如 "nmap hydra sqlmap"
+     * @return 执行输出
+     */
+    fun installTools(packages: String, timeoutMs: Long = 600_000): String {
+        if (packages.isBlank()) return "未指定要安装的工具"
+        // 先 apt update（容器内需联网，rootfs 默认 apt 源有效）
+        val update = exec("apt-get update -y", timeoutMs = timeoutMs)
+        if (!update.ok) return "apt update 失败: ${update.stderr.ifBlank { update.stdout }}"
+        val install = exec("apt-get install -y $packages", timeoutMs = timeoutMs)
+        if (install.ok) return "✅ 工具安装完成: $packages"
+        return "❌ 安装失败: ${install.stderr.ifBlank { install.stdout }}"
+    }
+
     // ---------- 启动 / 停止 ----------
 
     fun start(): ContainerState {
