@@ -101,7 +101,8 @@ class RootfsManager(private val context: Context = KaliDroidApp.instance) {
                         if (read < BLOCK) { result = false; break }
                         if (header.all { it == 0.toByte() }) continue
                         val name = str(header, 0, 100)
-                        val size = oct(header, 124, 12) ?: run { result = false; break }
+                        val size = oct(header, 124, 12)
+                        if (size == null) { result = false; break }
                         val type = header[156].toInt().toChar()
                         if (name.isBlank() || name == "./") { skip(raw, size); continue }
                         val out = File(target, sanitize(name))
