@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: write
+
 jobs:
   diag:
     runs-on: ubuntu-latest
@@ -35,20 +38,15 @@ jobs:
           set +e
           ./gradlew :app:assembleDebug --stacktrace --no-daemon > /tmp/gradle.log 2>&1
           echo "exit=$?" > /tmp/code.txt
-          tail -80 /tmp/gradle.log
+          tail -100 /tmp/gradle.log
 
-      - name: Upload gradle log artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: gradle-log
-          path: /tmp/gradle.log
-          if-no-files-found: error
-
-      - name: Summarize
+      - name: Commit gradle log back to repo
         run: |
-          {
-            echo "### gradle exit: $(cat /tmp/code.txt)"
-            echo '```'
-            tail -120 /tmp/gradle.log
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          mkdir -p diag
+          cp /tmp/gradle.log diag/gradle.log
+          echo "exit: $(cat /tmp/code.txt)" > diag/exit.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add diag/
+          git commit -m "diag: gradle log [skip ci]" || echo "no changes to commit"
+          git push 2>&1 | tail -3
